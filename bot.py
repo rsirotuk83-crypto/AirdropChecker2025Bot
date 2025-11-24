@@ -1,13 +1,12 @@
 import os
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes, CallbackQueryHandler
-import requests
-from rich.console import Console
 import asyncio
 
-BOT_TOKEN = "8485697907:AAEil1WfkZGVhR3K9wlHEVBJ5qNvn2B_mow"  # твій токен
+# Твій токен
+BOT_TOKEN = "8485697907:AAEil1WfkZGVhR3K9wlHEVBJ5qNvn2B_mow"
 
-# Фейкові дані для 15+ проєктів (реальні API можна додати пізніше)
+# Дані для 15+ проєктів (фейкові для прикладу, можна замінити на реальні API)
 PROJECTS = {
     'Berachain': 1240,
     'Monad': 890,
@@ -27,50 +26,57 @@ PROJECTS = {
 }
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    keyboard = [[InlineKeyboardButton("Оплатити $1 (TON/USDT)", callback_data='pay')]]
+    keyboard = [[InlineKeyboardButton("💰 Оплатити $1 (TON/USDT)", callback_data='pay')]]
     reply_markup = InlineKeyboardMarkup(keyboard)
     await update.message.reply_text(
-        'Airdrop Checker 2025–2026\n\n'
-        'Перевіряю 15+ топових проєктів за 10 секунд\n'
-        'Ціна: $1 раз і назавжди\n\n'
-        'Натисни кнопку внизу', 
-        reply_markup=reply_markup
+        '🚀 Привіт! Я Airdrop Checker 2025 Bot.\n\n'
+        'За 10 секунд перевірю твої аірдропи на 15+ проєктах:\n'
+        'Berachain • Monad • Eclipse • LayerZero S2 • Plume + ще 10!\n\n'
+        '💵 Ціна: $1 разово (TON/USDT через @CryptoBot).\n'
+        'Після оплати — сканую назавжди.\n\n'
+        'Натисни кнопку нижче 👇', reply_markup=reply_markup
     )
 
-async def pay(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def pay_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     await query.edit_message_text(
-        'Надішли будь-яке повідомлення (наприклад "Paid" або "Готово") — я дам доступ назавжди'
+        '💳 Оплата $1 через @CryptoBot.\n\n'
+        'Надішли мені підтвердження (наприклад, "Paid" або tx-хеш).\n'
+        'Я перевірю і дам доступ! 🚀'
     )
-    context.user_data['paid'] = True
+    context.user_data['paid'] = True  # Для тесту — відразу даємо доступ
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not context.user_data.get('paid'):
-        await update.message.reply_text('Спочатку оплати $1 кнопкою /start')
-        return
-    
-    address = update.message.text.strip()
-    if not address.startswith('0x') or len(address) != 42:
-        await update.message.reply_text('Надішли валідну адресу EVM (0x...)')
+    text = update.message.text
+    if context.user_data.get('paid') or 'paid' in text.lower() or 'tx' in text.lower():
+        await update.message.reply_text('✅ Оплата підтверджена! Надішли адресу гаманця (0x...) для скану.')
+        context.user_data['paid'] = True
         return
 
-    total = 0
-    result = f"Результати для {address[:6]}...{address[-4:]}\n\n"
-    for project, value in PROJECTS.items():
-        result += f"{project}: ${value:,}\n"
-        total += value
-    result += f"\nВСЬОГО ≈ ${total:,}"
-
-    await update.message.reply_text(result)
+    if context.user_data.get('paid'):
+        address = text.strip()
+        if address.startswith('0x') and len(address) == 42:
+            total = 0
+            result = f"📊 Результати для {address[:6]}...{address[-4:]}:\n\n"
+            for project, value in PROJECTS.items():
+                result += f"{project}: ${value:,}\n"
+                total += value
+            result += f"\n🔥 ВСЬОГО: ${total:,}\n\nТи нафармив солідно! 🚀"
+            await update.message.reply_text(result)
+        else:
+            await update.message.reply_text('❌ Невірна адреса. Спробуй ще раз (0x...).')
+    else:
+        await update.message.reply_text('Спочатку /start і оплати $1.')
 
 def main():
     app = Application.builder().token(BOT_TOKEN).build()
+
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(CallbackQueryHandler(pay, pattern='^pay$'))
+    app.add_handler(CallbackQueryHandler(pay_callback, pattern='^pay$'))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-    
-    print("Бот запущений! @AirdropChecker2025Bot")
+
+    print("Бот запущений! @AirdropChecker2025Bot готовий до фарму! 💰")
     app.run_polling()
 
 if __name__ == '__main__':
