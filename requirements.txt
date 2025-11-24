@@ -1,5 +1,3 @@
-python-telegram-bot==20.7
+python-telegram-bot==21.6
 requests
-web3
 rich
-python-dotenv
