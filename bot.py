@@ -54,4 +54,42 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_data = context.user_data
 
     # Чекаємо оплату
-    if user_data.get("waiting") or any(x in text for x in ["оплатил",
+    if user_data.get("waiting") or any(x in text for x in ["оплатил", "paid", "го", "готово", "оплата", "1$"]):
+        user_data["paid"] = True
+        user_data["waiting"] = False
+        await update.message.reply_text("✅ Оплата прошла!\nПришли свой кошелёк (0x...)")
+        return
+
+    # Вже оплатив — чекаємо адресу
+    if user_data.get("paid"):
+        addr = update.message.text.strip()
+        if addr.startswith("0x") and len(addr) == 42:
+            total = sum(DROPS.values())
+            result = f"📊 Результаты для {addr[:6]}...{addr[-4:]}:\n\n"
+            for name, amount in DROPS.items():
+                result += f"{name}: ${amount:,}\n"
+            result += f"\n🔥 ВСЕГО: ${total:,}\n\nТы нафармил очень круто!"
+            await update.message.reply_text(result)
+        else:
+            await update.message.reply_text("❌ Неверный адрес\nПришли кошелёк в формате 0x...")
+    else:
+        await update.message.reply_text("Сначала нажми /start и оплати $1 😉")
+
+async def main():
+    app = Application.builder().token(TOKEN).read_timeout(30).write_timeout(30).build()
+
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CallbackQueryHandler(button))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
+
+    print("Бот запущен и работает 24/7! @AirdropChecker2025Bot")
+    await app.initialize()
+    await app.start()
+    await app.updater.start_polling(drop_pending_updates=True)
+    
+    # Тримаємо процес живим (обов’язково для Railway!)
+    while True:
+        await asyncio.sleep(3600)
+
+if __name__ == "__main__":
+    asyncio.run(main())
