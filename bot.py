@@ -1,17 +1,14 @@
 import os
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes, CallbackQueryHandler
-import asyncio
 
-# Твій токен
-BOT_TOKEN = "8485697907:AAEil1WfkZGVhR3K9wlHEVBJ5qNvn2B_mow"
+BOT_TOKEN = os.getenv("BOT_TOKEN")
 
-# Дані для 15+ проєктів (фейкові для прикладу, можна замінити на реальні API)
 PROJECTS = {
     'Berachain': 1240,
     'Monad': 890,
     'Eclipse': 3880,
-    'LayerZero S2': 2150,
+       'LayerZero S2': 2150,
     'Plume Network': 670,
     'Movement Labs': 1120,
     'zkSync': 950,
@@ -25,59 +22,60 @@ PROJECTS = {
     'Linea': 760,
 }
 
+app = Application.builder().token(BOT_TOKEN).build()
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    keyboard = [[InlineKeyboardButton("💰 Оплатити $1 (TON/USDT)", callback_data='pay')]]
+    keyboard = [[InlineKeyboardButton("💰 Оплатить $1 (TON/USDT)", callback_data='pay')]]
     reply_markup = InlineKeyboardMarkup(keyboard)
     await update.message.reply_text(
-        '🚀 Привіт! Я Airdrop Checker 2025 Bot.\n\n'
-        'За 10 секунд перевірю твої аірдропи на 15+ проєктах:\n'
-        'Berachain • Monad • Eclipse • LayerZero S2 • Plume + ще 10!\n\n'
-        '💵 Ціна: $1 разово (TON/USDT через @CryptoBot).\n'
-        'Після оплати — сканую назавжди.\n\n'
-        'Натисни кнопку нижче 👇', reply_markup=reply_markup
+        '🚀 Привет! Я Airdrop Checker 2025–2026\n\n'
+        'За 10 секунд проверю твои аирдропы на 15+ проектах:\n'
+        'Berachain • Monad • Eclipse • LayerZero S2 • Plume + ещё 10\n\n'
+        '💵 Цена: $1 навсегда (TON/USDT)\n'
+        'После оплаты — доступ навсегда\n\n'
+        'Нажми кнопку ниже 👇',
+        reply_markup=reply_markup
     )
 
 async def pay_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     await query.edit_message_text(
-        '💳 Оплата $1 через @CryptoBot.\n\n'
-        'Надішли мені підтвердження (наприклад, "Paid" або tx-хеш).\n'
-        'Я перевірю і дам доступ! 🚀'
+        '💳 Оплата $1 через @CryptoBot (TON/USDT)\n\n'
+        'После оплаты пришли любое сообщение (например «Paid» или хеш транзакции)\n'
+        'Я проверю и дам доступ мгновенно 🚀'
     )
-    context.user_data['paid'] = True  # Для тесту — відразу даємо доступ
+    context.user_data['waiting_payment'] = True
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text = update.message.text
-    if context.user_data.get('paid') or 'paid' in text.lower() or 'tx' in text.lower():
-        await update.message.reply_text('✅ Оплата підтверджена! Надішли адресу гаманця (0x...) для скану.')
+    text = update.message.text.lower()
+
+    # Якщо чекаємо оплату
+    if context.user_data.get('waiting_payment') or 'paid' in text or 'оплатил' in text or 'го' in text:
         context.user_data['paid'] = True
+        context.user_data['waiting_payment'] = False
+        await update.message.reply_text('✅ Оплата подтверждена!\nПришли адрес кошелька (0x...) для проверки')
         return
 
+    # Якщо вже оплатив і присилає адресу
     if context.user_data.get('paid'):
-        address = text.strip()
+        address = update.message.text.strip()
         if address.startswith('0x') and len(address) == 42:
-            total = 0
-            result = f"📊 Результати для {address[:6]}...{address[-4:]}:\n\n"
+            total = sum(PROJECTS.values())
+            result = f"📊 Результаты для {address[:6]}...{address[-4:]}:\n\n"
             for project, value in PROJECTS.items():
                 result += f"{project}: ${value:,}\n"
-                total += value
-            result += f"\n🔥 ВСЬОГО: ${total:,}\n\nТи нафармив солідно! 🚀"
+            result += f"\n🔥 ВСЕГО: ${total:,}\n\nТы нафармил очень достойно! 💰"
             await update.message.reply_text(result)
         else:
-            await update.message.reply_text('❌ Невірна адреса. Спробуй ще раз (0x...).')
+            await update.message.reply_text('❌ Неверный адрес. Пришли кошелёк формата 0x...')
     else:
-        await update.message.reply_text('Спочатку /start і оплати $1.')
+        await update.message.reply_text('Сначала нажми /start и оплати $1 😉')
 
-def main():
-    app = Application.builder().token(BOT_TOKEN).build()
-
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CallbackQueryHandler(pay_callback, pattern='^pay$'))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-
-    print("Бот запущений! @AirdropChecker2025Bot готовий до фарму! 💰")
-    app.run_polling()
+app.add_handler(CommandHandler("start", start))
+app.add_handler(CallbackQueryHandler(pay_callback, pattern='^pay$'))
+app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
 if __name__ == '__main__':
-    main()
+    print("Бот запущен! @AirdropChecker2025Bot готов к фарму! 🚀")
+    app.run_polling()
