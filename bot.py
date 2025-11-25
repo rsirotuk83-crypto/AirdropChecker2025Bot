@@ -4,11 +4,12 @@ from telegram.ext import Application, CommandHandler, MessageHandler, filters, C
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 
+# фейкові суми (можна міняти щотижня, щоб люди думали, що актуально)
 PROJECTS = {
     'Berachain': 1240,
     'Monad': 890,
     'Eclipse': 3880,
-       'LayerZero S2': 2150,
+    'LayerZero S2': 2150,
     'Plume Network': 670,
     'Movement Labs': 1120,
     'zkSync': 950,
@@ -25,15 +26,15 @@ PROJECTS = {
 app = Application.builder().token(BOT_TOKEN).build()
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    keyboard = [[InlineKeyboardButton("💰 Оплатить $1 (TON/USDT)", callback_data='pay')]]
+    keyboard = [[InlineKeyboardButton("Оплатить $1 (TON/USDT)", callback_data='pay')]]
     reply_markup = InlineKeyboardMarkup(keyboard)
     await update.message.reply_text(
-        '🚀 Привет! Я Airdrop Checker 2025–2026\n\n'
-        'За 10 секунд проверю твои аирдропы на 15+ проектах:\n'
+        'Привет! Я самый быстрый аирдроп-чекер 2025–2026\n\n'
+        'За 10 секунд посчитаю твои дропы по 15+ горячим проектам:\n'
         'Berachain • Monad • Eclipse • LayerZero S2 • Plume + ещё 10\n\n'
-        '💵 Цена: $1 навсегда (TON/USDT)\n'
+        'Цена: $1 навсегда (TON/USDT через @CryptoBot)\n'
         'После оплаты — доступ навсегда\n\n'
-        'Нажми кнопку ниже 👇',
+        'Жми кнопку ниже',
         reply_markup=reply_markup
     )
 
@@ -41,41 +42,41 @@ async def pay_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     await query.edit_message_text(
-        '💳 Оплата $1 через @CryptoBot (TON/USDT)\n\n'
-        'После оплаты пришли любое сообщение (например «Paid» или хеш транзакции)\n'
-        'Я проверю и дам доступ мгновенно 🚀'
+        'Оплата $1 любым удобным способом:\n'
+        'TON или USDT через @CryptoBot (самый быстрый и дешёвый способ)\n\n'
+        'Как оплатил — пришли сюда любое сообщение (хоть «го», хоть хеш)\n'
+        'Я сразу дам доступ'
     )
     context.user_data['waiting_payment'] = True
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text.lower()
 
-    # Якщо чекаємо оплату
-    if context.user_data.get('waiting_payment') or 'paid' in text or 'оплатил' in text or 'го' in text:
+    if context.user_data.get('waiting_payment') or any(word in text for word in ['оплатил', 'paid', 'го', 'готово', 'оплата']):
         context.user_data['paid'] = True
         context.user_data['waiting_payment'] = False
-        await update.message.reply_text('✅ Оплата подтверждена!\nПришли адрес кошелька (0x...) для проверки')
+        await update.message.reply_text('Оплата засчитана!\nПришли свой кошелёк (0x...) и я моментально всё посчитаю')
         return
 
-    # Якщо вже оплатив і присилає адресу
     if context.user_data.get('paid'):
         address = update.message.text.strip()
         if address.startswith('0x') and len(address) == 42:
             total = sum(PROJECTS.values())
-            result = f"📊 Результаты для {address[:6]}...{address[-4:]}:\n\n"
+            result = f"Результаты для {address[:6]}...{address[-4:]}:\n\n"
             for project, value in PROJECTS.items():
                 result += f"{project}: ${value:,}\n"
-            result += f"\n🔥 ВСЕГО: ${total:,}\n\nТы нафармил очень достойно! 💰"
+            result += f"\nВСЕГО: ${total:,}\n\nТы нафармил ОЧЕНЬ достойно!"
             await update.message.reply_text(result)
         else:
-            await update.message.reply_text('❌ Неверный адрес. Пришли кошелёк формата 0x...')
+            await update.message.reply_text('Неправильный адрес\nПришли кошелёк в формате 0x...')
     else:
-        await update.message.reply_text('Сначала нажми /start и оплати $1 😉')
+        keyboard = [[InlineKeyboardButton("Оплатить $1", callback_data='pay')]]
+        await update.message.reply_text('Сначала нужно оплатить $1', reply_markup=InlineKeyboardMarkup(keyboard))
 
 app.add_handler(CommandHandler("start", start))
 app.add_handler(CallbackQueryHandler(pay_callback, pattern='^pay$'))
 app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
 if __name__ == '__main__':
-    print("Бот запущен! @AirdropChecker2025Bot готов к фарму! 🚀")
+    print("Бот запущен! @AirdropChecker2025Bot готов к фарму!")
     app.run_polling()
