@@ -1,14 +1,8 @@
-from flask import Flask, request, abort
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ContextTypes
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 import os
 
 TOKEN = os.getenv("BOT_TOKEN")
-APP_NAME = os.getenv("RAILWAY_STATIC_URL", "default")  # Railway URL
-WEBHOOK_URL = f"https://{APP_NAME}/{TOKEN}"
-
-app = Flask(__name__)
-application = Application.builder().token(TOKEN).build()
 
 DROPS = {
     'Berachain': 1240, 'Monad': 890, 'Eclipse': 3880, 'LayerZero S2': 2150,
@@ -63,25 +57,16 @@ async def text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         await update.message.reply_text("Сначала /start и оплати $1")
 
+application = Application.builder().token(TOKEN).build()
 application.add_handler(CommandHandler("start", start))
 application.add_handler(CallbackQueryHandler(button))
 application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text))
 
-@app.route(f'/{TOKEN}', methods=['POST'])
-def webhook():
-    update = Update.de_json(request.get_json(force=True), application.bot)
-    application.process_update(update)
-    return 'OK', 200
-
-@app.route('/')
-def index():
-    return "Airdrop Checker Bot is running! 🚀"
-
 if __name__ == '__main__':
-    print("Бот запущен на webhook — 100% стабильный!")
+    print("Бот запущен на Render — стабильный 24/7!")
     application.run_webhook(
         listen="0.0.0.0",
-        port=int(os.environ.get("PORT", 5000)),
+        port=int(os.environ.get("PORT", 10000)),
         url_path=TOKEN,
-        webhook_url=WEBHOOK_URL
+        webhook_url=f"https://your-render-url.onrender.com/{TOKEN}"
     )
