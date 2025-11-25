@@ -1,4 +1,1 @@
 python-telegram-bot==21.6
-requests
-rich
-flask==3.0.3
