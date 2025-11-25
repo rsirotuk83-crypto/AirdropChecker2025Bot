@@ -1,8 +1,14 @@
-import os
+from flask import Flask, request, abort
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ContextTypes
+import os
 
 TOKEN = os.getenv("BOT_TOKEN")
+APP_NAME = os.getenv("RAILWAY_STATIC_URL", "default")  # Railway URL
+WEBHOOK_URL = f"https://{APP_NAME}/{TOKEN}"
+
+app = Flask(__name__)
+application = Application.builder().token(TOKEN).build()
 
 DROPS = {
     'Berachain': 1240, 'Monad': 890, 'Eclipse': 3880, 'LayerZero S2': 2150,
@@ -18,7 +24,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "За 10 сек посчитаю все твои дропы по 15+ топ-проектам\n"
         "Berachain • Monad • Eclipse • LayerZero S2 • Plume + ещё 10\n\n"
         "Цена: $1 навсегда (TON/USDT)\n\n"
-        "Жми кнопку ниже",
+        "Жми кнопку 👇",
         reply_markup=InlineKeyboardMarkup(keyboard)
     )
 
@@ -28,40 +34,54 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if query.data == "pay":
         await query.edit_message_text(
             "Оплати $1 через @CryptoBot (TON или USDT)\n\n"
-            "Как оплатил — пришли сюда любое сообщение (хоть «го»)\n"
+            "После оплаты пришли сюда любое сообщение (хоть «го»)\n"
             "Я сразу открою доступ"
         )
-        context.user_data["wait"] = True
+        context.user_data["waiting"] = True
 
 async def text(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    t = update.message.text.lower()
-    u = context.user_data
+    text = update.message.text.lower()
+    ud = context.user_data
 
-    if u.get("wait") or any(x in t for x in ["го", "оплатил", "paid", "готово", "1$"]):
-        u["paid"] = True
-        u["wait"] = False
-        await update.message.reply_text("Оплата принята!\nПришли кошелёк 0x…")
+    if ud.get("waiting") or any(x in text for x in ["го", "оплатил", "paid", "готово", "1$"]):
+        ud["paid"] = True
+        ud["waiting"] = False
+        await update.message.reply_text("Оплата принята!\nПришли кошелёк 0x...")
         return
 
-    if u.get("paid"):
+    if ud.get("paid"):
         addr = update.message.text.strip()
         if addr.startswith("0x") and len(addr) == 42:
             total = sum(DROPS.values())
             res = f"Результаты для {addr[:6]}...{addr[-4:]}:\n\n"
             for p, v in DROPS.items():
                 res += f"{p}: ${v:,}\n"
-            res += f"\nВСЕГО: ${total:,}\n\nТы нафармил ОЧЕНЬ достойно!"
+            res += f"\nВСЕГО: ${total:,}\n\nТы нафармил очень круто!"
             await update.message.reply_text(res)
         else:
-            await update.message.reply_text("Неправильный адрес\nПришли кошелёк 0x…")
+            await update.message.reply_text("Неправильный адрес\nПришли кошелёк 0x...")
     else:
-        await update.message.reply_text("Сначала нажми /start и оплати $1")
+        await update.message.reply_text("Сначала /start и оплати $1")
 
-application = Application.builder().token(TOKEN).build()
 application.add_handler(CommandHandler("start", start))
 application.add_handler(CallbackQueryHandler(button))
 application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text))
 
-if __name__ == "__main__":
-    print("Бот запущен — 100% живой на Railway free!")
-    application.run_polling(drop_pending_updates=True)
+@app.route(f'/{TOKEN}', methods=['POST'])
+def webhook():
+    update = Update.de_json(request.get_json(force=True), application.bot)
+    application.process_update(update)
+    return 'OK', 200
+
+@app.route('/')
+def index():
+    return "Airdrop Checker Bot is running! 🚀"
+
+if __name__ == '__main__':
+    print("Бот запущен на webhook — 100% стабильный!")
+    application.run_webhook(
+        listen="0.0.0.0",
+        port=int(os.environ.get("PORT", 5000)),
+        url_path=TOKEN,
+        webhook_url=WEBHOOK_URL
+    )
