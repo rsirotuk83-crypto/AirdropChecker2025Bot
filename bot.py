@@ -2,6 +2,7 @@ from flask import Flask, request
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ContextTypes
 import os
+import asyncio
 
 TOKEN = os.getenv("BOT_TOKEN")
 PORT = int(os.environ.get("PORT", 5000))
@@ -72,7 +73,7 @@ def webhook():
         json_data = request.get_json(force=True)
         update = Update.de_json(json_data, application.bot)
         if update:
-            # Sync process без async — фікс для 500
+            # Фікс для 500: sync loop з await
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
             loop.run_until_complete(application.process_update(update))
