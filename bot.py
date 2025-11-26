@@ -25,7 +25,7 @@ def webhook():
     async def process():
         chat_id = None
 
-        # /start — працює з пробілом, з @ботом, з меню
+        # 1. /start — працює з будь-яким варіантом
         if update.message and update.message.text:
             cmd = update.message.text.strip().split()[0]
             if cmd in ["/start", "/start@AirdropChecker2025Bot"]:
@@ -37,12 +37,11 @@ def webhook():
                     text="Привет! Самый быстрый аирдроп-чекер 2025–2026\n\n"
                          "За 10 сек посчитаю все твои дропы по 15+ топ-проектам\n"
                          "Berachain • Monad • Eclipse • LayerZero S2 • Plume + ещё 10\n\n"
-                         "Цена: $1 навсегда (TON/USDT)\n\nЖми кнопку 👇",
+                         "Цена: $1 навсегда (TON/USDT)\n\nЖми кнопку ↓",
                     reply_markup=telegram.InlineKeyboardMarkup(keyboard)
                 )
-                return
 
-        # кнопка «Оплатить»
+        # 2. Кнопка «Оплатить»
         if update.callback_query and update.callback_query.data == "pay":
             chat_id = update.callback_query.message.chat_id
             await update.callback_query.answer()
@@ -53,25 +52,23 @@ def webhook():
                      "Я сразу открою доступ"
             )
             user_data[chat_id] = {"waiting": True, "paid": False}
-            return
 
-        # після оплати (будь-який текст)
+        # 3. Після оплати (будь-яке повідомлення)
         if update.message and user_data.get(update.message.chat_id, {}).get("waiting"):
             chat_id = update.message.chat_id
             user_data[chat_id]["paid"] = True
             user_data[chat_id]["waiting"] = False
             await bot.send_message(chat_id=chat_id, text="Оплата принята! ✅\nПришли кошелёк 0x...")
-            return
 
-        # введення гаманця
+        # 4. Гаманець
         if update.message and user_data.get(update.message.chat_id, {}).get("paid"):
             addr = update.message.text.strip()
             chat_id = update.message.chat_id
             if addr.startswith("0x") and len(addr) == 42:
                 total = sum(DROPS.values())
                 res = f"Результаты для {addr[:6]}...{addr[-4:]}:\n\n"
-                for project, amount in DROPS.items():
-                    res += f"• {project}: ${amount:,}\n"
+                for p, v in DROPS.items():
+                    res += f"• {p}: ${v:,}\n"
                 res += f"\nВСЕГО: ${total:,}\n\nТы нафармил очень круто! 🔥"
                 await bot.send_message(chat_id=chat_id, text=res)
             else:
@@ -82,7 +79,7 @@ def webhook():
 
 @app.route('/')
 def index():
-    return "AirdropChecker2025Bot — alive & ready to earn 💰"
+    return "AirdropChecker2025Bot — 100% alive"
 
 if __name__ == "__main__":
     app.run(host='0.0.0.0', port=int(os.environ.get("PORT", 5000)))
