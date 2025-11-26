@@ -15,11 +15,11 @@ DROPS = {
     'Starknet': 2100, 'Celestia': 430, 'Linea': 760
 }
 
-user_data = {}
+user_data = {}  # chat_id → {"paid": True/False}
 
-# Новий правильний спосіб — фонова задача
-async def send_message(chat_id, text, reply_markup=None):
-    await bot.send_message(chat_id=chat_id, text=text, reply_markup=reply_markup)
+# Асинхронне відправлення
+async def send(chat_id, text, markup=None):
+    await bot.send_message(chat_id=chat_id, text=text, reply_markup=markup)
 
 def run_async(coro):
     try:
@@ -32,56 +32,36 @@ def run_async(coro):
 @app.route('/webhook', methods=['POST'])
 def webhook():
     update = telegram.Update.de_json(request.get_json(force=True), bot)
-    if not update:
-        return 'ok', 200
-
-    # Запускаємо обробку в фоні — це найголовніше для Railway
-    threading.Thread(target=handle_update, args=(update,)).start()
+    if update:
+        threading.Thread(target=handle, args=(update,)).start()
     return 'ok', 200
 
-def handle_update(update):
+def handle(update):
     async def process():
         try:
+            chat_id = None
+
             # /start
-            if update.message and update.message.text:
-                cmd = update.message.text.strip().split("@")[0].split()[0].lower()
-                if cmd == "/start":
-                    chat_id = update.message.chat_id
-                    user_data[chat_id] = {"paid": False, "waiting": False}
-                    keyboard = [[telegram.InlineKeyboardButton("Оплатить $1 (TON/USDT)", callback_data="pay")]]
-                    await send_message(
-                        chat_id,
-                        "Привет! Самый быстрый аирдроп-чекер 2025–2026\n\n"
-                        "За 10 секунд посчитаю все твои дропы по 15+ топ-проектам:\n"
-                        "Berachain • Monad • Eclipse • LayerZero S2 • Plume + ещё 10\n\n"
-                        "Цена: $1 навсегда (TON/USDT)\n\nЖми кнопку ↓",
-                        telegram.InlineKeyboardMarkup(keyboard)
-                    )
-                    return
-
-            # Кнопка
-            if update.callback_query and update.callback_query.data == "pay":
-                query = update.callback_query
-                await query.answer()
-                chat_id = query.message.chat_id
-                user_data[chat_id] = {"waiting": True, "paid": False}
-                await send_message(
-                    chat_id,
-                    "Оплати $1 через @CryptoBot (TON или USDT)\n\n"
-                    "После оплаты пришли сюда любое сообщение (хоть «го», «ок», «+»)\n"
-                    "Я сразу открою доступ"
-                )
-                return
-
-            # Після «го»
-            if update.message and user_data.get(update.message.chat_id, {}).get("waiting"):
+            if update.message and update.message.text and "/start" in update.message.text:
                 chat_id = update.message.chat_id
-                user_data[chat_id] = {"paid": True, "waiting": False}
-                await send_message(chat_id, "Оплата принята! Пришли кошелёк 0x...")
-                return
+                user_data[chat_id] = {"paid": False}
+                keyboard = [[telegram.InlineKeyboardButton("Оплатить $1 (TON/USDT)", url="https://t.me/CryptoBot?start=pay_1usd")]]
+                await send(chat_id,
+                    "Привет! Самый быстрый аирдроп-чекер 2025–2026\n\n"
+                    "За 10 секунд посчитаю все твои дропы по 15+ топ-проектам:\n"
+                    "Berachain • Monad • Eclipse • LayerZero S2 • Plume + ещё 10\n\n"
+                    "Цена: $1 навсегда\n\nЖми кнопку ↓",
+                    telegram.InlineKeyboardMarkup(keyboard))
 
-            # Гаманець
-            if update.message and user_data.get(update.message.chat_id, {}).get("paid"):
+            # Після оплати — будь-яке повідомлення
+            elif update.message and update.message.chat_id in user_data:
+                chat_id = update.message.chat_id
+                if not user_data[chat_id]["paid"]:
+                    user_data[chat_id]["paid"] = True
+                    await send(chat_id, "Оплата принята! Пришли кошелёк 0x...")
+
+            # Введення гаманця
+            elif update.message and update.message.chat_id in user_data and user_data[update.message.chat_id]["paid"]:
                 addr = update.message.text.strip()
                 chat_id = update.message.chat_id
                 if addr.lower().startswith("0x") and len(addr) == 42:
@@ -90,19 +70,18 @@ def handle_update(update):
                     for p, v in DROPS.items():
                         res += f"• {p} — ${v:,}\n"
                     res += f"\nВСЕГО: ${total:,}\n\nТы нафармил очень круто!"
-                    await send_message(chat_id, res)
+                    await send(chat_id, res)
                 else:
-                    await send_message(chat_id, "Неправильный адрес Пришли кошелёк 0x...")
+                    await send(chat_id, "Неправильный адрес Пришли кошелёк 0x...")
 
         except Exception as e:
-            print(f"Ошибка: {e}")
+            print("Ошибка:", e)
 
     run_async(process())
 
 @app.route('/')
 def index():
-    return "Airdrop Checker 2025–2026 — работает 100%"
+    return "Airdrop Checker 2025–2026 — работает!"
 
 if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 5000))
-    app.run(host="0.0.0.0", port=port)
+    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
