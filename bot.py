@@ -69,9 +69,14 @@ application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text))
 @app.route('/webhook', methods=['POST'])
 def webhook():
     try:
-        update = Update.de_json(request.get_json(force=True), application.bot)
+        json_data = request.get_json(force=True)
+        update = Update.de_json(json_data, application.bot)
         if update:
-            application.process_update(update)
+            # Sync process без async — фікс для 500
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            loop.run_until_complete(application.process_update(update))
+            loop.close()
         return 'OK', 200
     except Exception as e:
         print(f"Webhook error: {e}")
