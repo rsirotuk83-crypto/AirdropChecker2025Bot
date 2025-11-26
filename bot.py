@@ -15,16 +15,14 @@ DROPS = {
     'Starknet': 2100, 'Celestia': 430, 'Linea': 760
 }
 
-user_data = {}  # chat_id → {"paid": True/False}
+user_data = {}  # chat_id → {"paid": False}
 
-# Асинхронне відправлення
 async def send(chat_id, text, markup=None):
-    await bot.send_message(chat_id=chat_id, text=text, reply_markup=markup)
+    await bot.send_message(chat_id=chat_id, text=text, reply_markup=markup, parse_mode='HTML')
 
 def run_async(coro):
-    try:
-        loop = asyncio.get_event_loop()
-    except:
+    loop = asyncio.get_event_loop_policy().get_event_loop()
+    if loop.is_closed():
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
     loop.run_until_complete(coro)
@@ -32,56 +30,51 @@ def run_async(coro):
 @app.route('/webhook', methods=['POST'])
 def webhook():
     update = telegram.Update.de_json(request.get_json(force=True), bot)
-    if update:
-        threading.Thread(target=handle, args=(update,)).start()
+    if update and update.message:
+        threading.Thread(target=handle, args=(update.message,)).start()
     return 'ok', 200
 
-def handle(update):
+def handle(msg):
     async def process():
-        try:
-            chat_id = None
+        chat_id = msg.chat_id
+        text = msg.text or ""
 
-            # /start
-            if update.message and update.message.text and "/start" in update.message.text:
-                chat_id = update.message.chat_id
-                user_data[chat_id] = {"paid": False}
-                keyboard = [[telegram.InlineKeyboardButton("Оплатить $1 (TON/USDT)", url="https://t.me/CryptoBot?start=pay_1usd")]]
-                await send(chat_id,
-                    "Привет! Самый быстрый аирдроп-чекер 2025–2026\n\n"
-                    "За 10 секунд посчитаю все твои дропы по 15+ топ-проектам:\n"
-                    "Berachain • Monad • Eclipse • LayerZero S2 • Plume + ещё 10\n\n"
-                    "Цена: $1 навсегда\n\nЖми кнопку ↓",
-                    telegram.InlineKeyboardMarkup(keyboard))
+        # /start — перше повідомлення
+        if "/start" in text:
+            user_data[chat_id] = {"paid": False}
+            keyboard = [[telegram.InlineKeyboardButton("💸 Оплатить $1 (TON/USDT)", 
+                                                      url="https://t.me/CryptoBot?start=pay_1usd")]]
+            await send(chat_id,
+                "🚀 <b>Аирдроп-чекер 2025–2026</b>\n\n"
+                "За 10 секунд посчитаю все твои дропы по 15+ топ-проектам:\n"
+                "Berachain • Monad • Eclipse • LayerZero S2 • Plume + ещё 10\n\n"
+                "💰 Цена: <b>$1 навсегда</b>\n\n"
+                "Нажми кнопку ниже ↓",
+                telegram.InlineKeyboardMarkup(keyboard))
 
-            # Після оплати — будь-яке повідомлення
-            elif update.message and update.message.chat_id in user_data:
-                chat_id = update.message.chat_id
-                if not user_data[chat_id]["paid"]:
-                    user_data[chat_id]["paid"] = True
-                    await send(chat_id, "Оплата принята! Пришли кошелёк 0x...")
+        # Після оплати — будь-яке повідомлення відкриває доступ
+        elif chat_id in user_data and not user_data[chat_id]["paid"]:
+            user_data[chat_id]["paid"] = True
+            await send(chat_id, "✅ <b>Оплата принята!</b>\n\nПришли свой кошелёк <code>0x...</code>")
 
-            # Введення гаманця
-            elif update.message and update.message.chat_id in user_data and user_data[update.message.chat_id]["paid"]:
-                addr = update.message.text.strip()
-                chat_id = update.message.chat_id
-                if addr.lower().startswith("0x") and len(addr) == 42:
-                    total = sum(DROPS.values())
-                    res = f"Результаты для {addr[:6]}...{addr[-4:]}:\n\n"
-                    for p, v in DROPS.items():
-                        res += f"• {p} — ${v:,}\n"
-                    res += f"\nВСЕГО: ${total:,}\n\nТы нафармил очень круто!"
-                    await send(chat_id, res)
-                else:
-                    await send(chat_id, "Неправильный адрес Пришли кошелёк 0x...")
-
-        except Exception as e:
-            print("Ошибка:", e)
+        # Введення гаманця
+        elif chat_id in user_data and user_data[chat_id]["paid"]:
+            addr = text.strip()
+            if addr.lower().startswith("0x") and len(addr) == 42:
+                total = sum(DROPS.values())
+                res = f"💎 Результат для <code>{addr[:6]}...{addr[-4:]}</code>\n\n"
+                for project, amount in DROPS.items():
+                    res += f"• {project} — <b>${amount:,}</b>\n"
+                res += f"\n🎉 <b>ВСЕГО: ${total:,}</b>\n\nТы нафармил офигенно!"
+                await send(chat_id, res)
+            else:
+                await send(chat_id, "❌ Неверный адрес\nПришли кошелёк в формате <code>0x...</code>")
 
     run_async(process())
 
 @app.route('/')
 def index():
-    return "Airdrop Checker 2025–2026 — работает!"
+    return "AirdropChecker2025Bot — работает на максималках 🔥"
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
