@@ -1,14 +1,13 @@
-from flask import Flask, request, abort
+from flask import Flask, request
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ContextTypes
+from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, ContextTypes
 import os
 import asyncio
 
 TOKEN = os.getenv("BOT_TOKEN")
-PORT = int(os.environ.get("PORT", 5000))
-DOMAIN = os.getenv("RAILWAY_STATIC_URL", "airdropchecker2025bot-production.up.railway.app")  # твій URL з Networking
-
 app = Flask(__name__)
+
+# Будуємо додаток один раз
 application = Application.builder().token(TOKEN).build()
 
 DROPS = {
@@ -18,7 +17,7 @@ DROPS = {
     'Starknet': 2100, 'Celestia': 430, 'Linea': 760
 }
 
-async def start(update, context):
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     keyboard = [[InlineKeyboardButton("Оплатить $1 (TON/USDT)", callback_data="pay")]]
     await update.message.reply_text(
         "Привет! Самый быстрый аирдроп-чекер 2025–2026\n\n"
@@ -29,7 +28,7 @@ async def start(update, context):
         reply_markup=InlineKeyboardMarkup(keyboard)
     )
 
-async def button(update, context):
+async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     if query.data == "pay":
@@ -40,11 +39,11 @@ async def button(update, context):
         )
         context.user_data["waiting"] = True
 
-async def text(update, context):
+async def text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text.lower()
     ud = context.user_data
 
-    if ud.get("waiting") or any(x in text for x in ["го", "оплатил", "paid", "готово", "1$"]):
+    if ud.get("waiting") or any(word in text for word in ["го", "оплатил", "paid", "готово", "1$"]):
         ud["paid"] = True
         ud["waiting"] = False
         await update.message.reply_text("Оплата принята!\nПришли кошелёк 0x...")
@@ -54,7 +53,7 @@ async def text(update, context):
         addr = update.message.text.strip()
         if addr.startswith("0x") and len(addr) == 42:
             total = sum(DROPS.values())
-            res = f"Результаты для {addr[:6]}...{addr[-4:]}:\n\n"
+            res = f"Результаты для {addr[:6}...{addr[-4:]}:\n\n"
             for p, v in DROPS.items():
                 res += f"{p}: ${v:,}\n"
             res += f"\nВСЕГО: ${total:,}\n\nТы нафармил очень круто!"
@@ -64,21 +63,23 @@ async def text(update, context):
     else:
         await update.message.reply_text("Сначала /start и оплати $1")
 
+# Реєструємо хендлери
 application.add_handler(CommandHandler("start", start))
 application.add_handler(CallbackQueryHandler(button))
-application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text))
+application.add_handler(MessageHandler(Message.TEXT & ~Message.COMMAND, text))
 
+# Webhook-ендпоінт
 @app.route('/webhook', methods=['POST'])
 def webhook():
-    update = Update.de_json(request.get_json(force=True), application.bot)
-    if update:
-        asyncio.create_task(application.process_update(update))
+    json_data = request.get_json(force=True)
+    update = Update.de_json(json_data, application.bot)
+    asyncio.run(application.process_update(update))  # ← саме так треба на Flask + PTB 21+
     return 'OK', 200
 
 @app.route('/')
 def index():
-    return "Airdrop Checker Bot is running! 🚀"
+    return "AirdropChecker2025Bot is running 24/7!"
 
 if __name__ == '__main__':
-    print("Бот запущен на webhook — стабильный 24/7!")
-    app.run(host="0.0.0.0", port=PORT)
+    port = int(os.environ.get('PORT', 5000))
+    app.run(host='0.0.0.0', port=port)
