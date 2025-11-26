@@ -23,6 +23,8 @@ def webhook():
         return 'ok', 200
 
     async def process():
+        chat_id = None
+
         # /start
         if update.message and update.message.text == "/start":
             chat_id = update.message.chat_id
@@ -37,22 +39,22 @@ def webhook():
                 reply_markup=telegram.InlineKeyboardMarkup(keyboard)
             )
 
-        # кнопка оплати
+        # кнопка
         if update.callback_query and update.callback_query.data == "pay":
             chat_id = update.callback_query.message.chat_id
             await update.callback_query.answer()
             await bot.send_message(chat_id, "Оплати $1 через @CryptoBot (TON или USDT)\n\n"
                                            "После оплаты пришли сюда любое сообщение (хоть «го»)")
-            user_data[chat_id] = {"waiting": True}
+            user_data[chat_id] = {"waiting": True, "paid": False}
 
-        # після оплати
+        # після "го"
         if update.message and user_data.get(update.message.chat_id, {}).get("waiting"):
             chat_id = update.message.chat_id
             user_data[chat_id]["paid"] = True
             user_data[chat_id]["waiting"] = False
             await bot.send_message(chat_id, "Оплата принята!\nПришли кошелёк 0x...")
 
-        # введення гаманця
+        # гаманець
         if update.message and user_data.get(update.message.chat_id, {}).get("paid"):
             addr = update.message.text.strip()
             chat_id = update.message.chat_id
@@ -60,8 +62,8 @@ def webhook():
                 total = sum(DROPS.values())
                 res = f"Результаты для {addr[:6]}...{addr[-4:]}:\n\n"
                 for p, v in DROPS.items():
-                    res += f"{p}: ${v:,}\n"
-                res += f"\nВСЕГО: ${total:,}\n\nТы нафармил очень круто!"
+                    res += f"• {p}: ${v:,}\n"
+                res += f"\nВСЕГО: ${total:,}\n\nТы нафармил очень круто! 🔥"
                 await bot.send_message(chat_id, res)
             else:
                 await bot.send_message(chat_id, "Неправильный адрес\nПришли кошелёк 0x...")
@@ -71,7 +73,7 @@ def webhook():
 
 @app.route('/')
 def index():
-    return "Bot alive!"
+    return "Bot is running!"
 
 if __name__ == "__main__":
     app.run(host='0.0.0.0', port=int(os.environ.get("PORT", 5000)))
