@@ -1,13 +1,12 @@
 from flask import Flask, request
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, ContextTypes
+from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ContextTypes
 import os
-import asyncio
 
 TOKEN = os.getenv("BOT_TOKEN")
-app = Flask(__name__)
+PORT = int(os.environ.get("PORT", 5000))
 
-# Будуємо додаток один раз
+app = Flask(__name__)
 application = Application.builder().token(TOKEN).build()
 
 DROPS = {
@@ -17,7 +16,7 @@ DROPS = {
     'Starknet': 2100, 'Celestia': 430, 'Linea': 760
 }
 
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def start(update, context):
     keyboard = [[InlineKeyboardButton("Оплатить $1 (TON/USDT)", callback_data="pay")]]
     await update.message.reply_text(
         "Привет! Самый быстрый аирдроп-чекер 2025–2026\n\n"
@@ -28,7 +27,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_markup=InlineKeyboardMarkup(keyboard)
     )
 
-async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def button(update, context):
     query = update.callback_query
     await query.answer()
     if query.data == "pay":
@@ -39,11 +38,11 @@ async def button(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         context.user_data["waiting"] = True
 
-async def text(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def text(update, context):
     text = update.message.text.lower()
     ud = context.user_data
 
-    if ud.get("waiting") or any(word in text for word in ["го", "оплатил", "paid", "готово", "1$"]):
+    if ud.get("waiting") or any(x in text for x in ["го", "оплатил", "paid", "готово", "1$"]):
         ud["paid"] = True
         ud["waiting"] = False
         await update.message.reply_text("Оплата принята!\nПришли кошелёк 0x...")
@@ -53,7 +52,7 @@ async def text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         addr = update.message.text.strip()
         if addr.startswith("0x") and len(addr) == 42:
             total = sum(DROPS.values())
-            res = f"Результаты для {addr[:6}...{addr[-4:]}:\n\n"
+            res = f"Результаты для {addr[:6]}...{addr[-4:]}:\n\n"
             for p, v in DROPS.items():
                 res += f"{p}: ${v:,}\n"
             res += f"\nВСЕГО: ${total:,}\n\nТы нафармил очень круто!"
@@ -63,23 +62,25 @@ async def text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         await update.message.reply_text("Сначала /start и оплати $1")
 
-# Реєструємо хендлери
 application.add_handler(CommandHandler("start", start))
 application.add_handler(CallbackQueryHandler(button))
-application.add_handler(MessageHandler(Message.TEXT & ~Message.COMMAND, text))
+application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text))
 
-# Webhook-ендпоінт
 @app.route('/webhook', methods=['POST'])
 def webhook():
-    json_data = request.get_json(force=True)
-    update = Update.de_json(json_data, application.bot)
-    asyncio.run(application.process_update(update))  # ← саме так треба на Flask + PTB 21+
-    return 'OK', 200
+    try:
+        update = Update.de_json(request.get_json(force=True), application.bot)
+        if update:
+            application.process_update(update)
+        return 'OK', 200
+    except Exception as e:
+        print(f"Webhook error: {e}")
+        return 'Error', 500
 
 @app.route('/')
 def index():
-    return "AirdropChecker2025Bot is running 24/7!"
+    return "Airdrop Checker Bot is running! 🚀"
 
 if __name__ == '__main__':
-    port = int(os.environ.get('PORT', 5000))
-    app.run(host='0.0.0.0', port=port)
+    print("Бот запущен на webhook — стабильный 24/7!")
+    app.run(host="0.0.0.0", port=PORT, debug=False)
