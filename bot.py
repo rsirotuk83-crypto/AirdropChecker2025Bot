@@ -14,18 +14,18 @@ DROPS = {
     'Starknet': 2100, 'Celestia': 430, 'Linea': 760
 }
 
-user_data = {}
+user_data = {}  # chat_id → dict
 
 @app.route('/webhook', methods=['POST'])
 def webhook():
-    update = telegram.Update.de_json(request.get_json(force=True), bot)
-    if not update:
+    update_json = request.get_json(force=True)
+    if not update_json:
         return 'ok', 200
 
-    async def process():
-        chat_id = None
+    update = telegram.Update.de_json(update_json, bot)
 
-        # 1. /start — працює з будь-яким варіантом
+    async def handle():
+        # 1. /start
         if update.message and update.message.text:
             cmd = update.message.text.strip().split()[0]
             if cmd in ["/start", "/start@AirdropChecker2025Bot"]:
@@ -40,27 +40,32 @@ def webhook():
                          "Цена: $1 навсегда (TON/USDT)\n\nЖми кнопку ↓",
                     reply_markup=telegram.InlineKeyboardMarkup(keyboard)
                 )
+                return
 
-        # 2. Кнопка «Оплатить»
-        if update.callback_query and update.callback_query.data == "pay":
-            chat_id = update.callback_query.message.chat_id
-            await update.callback_query.answer()
-            await bot.send_message(
-                chat_id=chat_id,
-                text="Оплати $1 через @CryptoBot (TON или USDT)\n\n"
-                     "После оплаты пришли сюда любое сообщение (хоть «го»)\n"
-                     "Я сразу открою доступ"
-            )
-            user_data[chat_id] = {"waiting": True, "paid": False}
+        # 2. НАЖАТИЕ КНОПКИ «Оплатить»
+        if update.callback_query:
+            query = update.callback_query
+            if query.data == "pay":
+                chat_id = query.message.chat_id
+                await query.answer()  # гасим крутилку
+                await bot.send_message(
+                    chat_id=chat_id,
+                    text="Оплати $1 через @CryptoBot (TON или USDT)\n\n"
+                         "После оплаты пришли сюда любое сообщение (хоть «го»)\n"
+                         "Я сразу открою доступ"
+                )
+                user_data[chat_id] = {"waiting": True, "paid": False}
+                return
 
-        # 3. Після оплати (будь-яке повідомлення)
+        # 3. После оплаты (любой текст)
         if update.message and user_data.get(update.message.chat_id, {}).get("waiting"):
             chat_id = update.message.chat_id
             user_data[chat_id]["paid"] = True
             user_data[chat_id]["waiting"] = False
             await bot.send_message(chat_id=chat_id, text="Оплата принята! ✅\nПришли кошелёк 0x...")
+            return
 
-        # 4. Гаманець
+        # 4. Ввод кошелька
         if update.message and user_data.get(update.message.chat_id, {}).get("paid"):
             addr = update.message.text.strip()
             chat_id = update.message.chat_id
@@ -74,12 +79,14 @@ def webhook():
             else:
                 await bot.send_message(chat_id=chat_id, text="Неправильный адрес 😕\nПришли кошелёк 0x...")
 
-    asyncio.run(process())
+    asyncio.run(handle())
     return 'ok', 200
+
 
 @app.route('/')
 def index():
-    return "AirdropChecker2025Bot — 100% alive"
+    return "Bot is 100% alive 🚀"
+
 
 if __name__ == "__main__":
-    app.run(host='0.0.0.0', port=int(os.environ.get("PORT", 5000)))
+    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
