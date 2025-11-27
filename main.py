@@ -3,9 +3,12 @@ from telegram.ext import Application, CommandHandler, MessageHandler, filters, C
 import os
 
 TOKEN = os.getenv("BOT_TOKEN")
+ADMIN_ID = 777777777  # ← ТУТ ТВІЙ ID (від @userinfobot)
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    keyboard = [[InlineKeyboardButton("Оплатить $1 → TON/USDT", url="https://t.me/CryptoBot?start=IVeOWQMbUYjt")]]
+    user_id = update.effective_user.id
+    keyboard = [[InlineKeyboardButton("Оплатить $1 → TON/USDT", 
+                                     url=f"https://t.me/CryptoBot?start=IVeOWQMbUYjt_{user_id}")]]
     reply_markup = InlineKeyboardMarkup(keyboard)
 
     await update.message.reply_text(
@@ -14,12 +17,11 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "Цена: $1 навсегда\n\nЖми кнопку ↓",
         reply_markup=reply_markup
     )
+    
+    # повідомлення адміну
+    await context.bot.send_message(ADMIN_ID, f"Новий юзер: {user_id}\n@{update.effective_user.username}")
 
-def main():
-    application = Application.builder().token(TOKEN).build()
-    application.add_handler(CommandHandler("start", start))
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, start))
-    application.run_polling(drop_pending_updates=True)
-
-if __name__ == "__main__":
-    main()
+application = Application.builder().token(TOKEN).build()
+application.add_handler(CommandHandler("start", start))
+application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, start))
+application.run_polling(drop_pending_updates=True)
