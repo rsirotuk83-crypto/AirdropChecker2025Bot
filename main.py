@@ -5,8 +5,7 @@ import os
 TOKEN = os.getenv("BOT_TOKEN")
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    keyboard = [[InlineKeyboardButton("Оплатить $1 → TON/USDT",
-                                     url="https://t.me/CryptoBot?start=IVeOWQMbUYjt")]]
+    keyboard = [[InlineKeyboardButton("Оплатить $1 → TON/USDT", url="https://t.me/CryptoBot?start=IVeOWQMbUYjt")]]
     reply_markup = InlineKeyboardMarkup(keyboard)
 
     await update.message.reply_text(
@@ -17,10 +16,10 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 def main():
-    app = Application.builder().token(TOKEN).build()
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, start))
-    app.run_polling(drop_pending_updates=True)
+    application = Application.builder().token(TOKEN).build()
+    application.add_handler(CommandHandler("start", start))
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, start))
+    application.run_polling(drop_pending_updates=True)
 
 if __name__ == "__main__":
     main()
