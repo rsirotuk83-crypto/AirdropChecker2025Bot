@@ -1,46 +1,67 @@
 import os
+import logging
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
+from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes, CallbackContext
 
-TOKEN = os.getenv("BOT_TOKEN")          # твій токен бота
-ADMIN_ID = 777777777                     # ←←←←←←←←←←←←←←←←←← ЗАМІНИ НА СВІЙ ID (від @userinfobot)
+TOKEN = os.getenv("BOT_TOKEN")
+CRYPTOBOT_PARAM = "IVeOWQMbUYjt"   # твій параметр з CryptoBot
+
+# тут зберігатимемо хто вже оплатив (в пам'яті, перезапуститься — список очиститься, але на старті норм)
+PAID_USERS = set()
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user = update.effective_user
-    user_id = user.id
-    username = user.username or "без юзернейму"
+    user_id = update.effective_user.id
 
-    # кнопка з твоїм рефералкою + ID юзера (щоб ти бачив хто оплатив)
+    # якщо вже оплатив — одразу даємо доступ
+    if user_id in PAID_USERS:
+        await update.message.reply_text(
+            "Доступ вже відкрито назавжди!\n\n"
+            "Тут буде твій чекер або інструкція.\n"
+            "Поки що — вітаю з покупкою!"
+        )
+        return
+
+    # звичайна кнопка оплати з параметром + ID юзера
     keyboard = [[InlineKeyboardButton("Оплатить $1 → TON/USDT",
-                                     url=f"https://t.me/CryptoBot?start=IVeOWQMbUYjt_{user_id}")]]
+                                     url=f"https://t.me/CryptoBot?start={CRYPTOBOT_PARAM}_{user_id}")]]
     reply_markup = InlineKeyboardMarkup(keyboard)
 
     await update.message.reply_text(
-        "Самый быстрый аирдроп-чекер 2025–2026\n\n"
-        "За 10 сек посчитаю всё по 15+ топ-проектам\n\n"
-        "Цена: $1 навсегда\n\n"
-        "Жми кнопку ↓",
+        "Найшвидший аирдроп-чекер 2025–2026\n\n"
+        "За 10 сек порахую все по 15+ топ-проектам\n\n"
+        "Ціна: $1 назавжди\n\n"
+        "Тисни кнопку ↓",
         reply_markup=reply_markup
     )
 
-    # сповіщення тобі в ЛС
-    await context.bot.send_message(
-        chat_id=ADMIN_ID,
-        text=f"Новий юзер!\n\nID: {user_id}\nЮзернейм: @{username}\nІм’я: {user.full_name}"
-    )
+# обробка пре-чек ауту від CryptoBot (коли юзер натиснув кнопку)
+async def pre_checkout(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    # нічого не робимо — просто дозволяємо оплату
 
+# коли оплата пройшла — CryptoBot шле повідомлення з payload = user_id
+async def successful_payment(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = int(update.message.successful_payment.invoice_payload)
+    PAID_USERS.add(user_id)
+
+    await update.message.reply_text(
+        "Оплата пройшла успішно!\n\n"
+        "Доступ відкрито назавжди!\n"
+        "Твій аирдроп-чекер вже тут (або посилання/інструкція).\n"
+        "Вітаю!"
+    )
 
 def main():
     app = Application.builder().token(TOKEN).build()
 
-    # реагує на /start і на кнопку «СТАРТ» внизу
     app.add_handler(CommandHandler("start", start))
-    # реагує на будь-яке текстове повідомлення (привіт, хай, 123 і т.д.)
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, start))
+    # обов’язково для CryptoBot payments
+    app.add_handler(MessageHandler(filters.SUCCESSFUL_PAYMENT, successful_payment))
 
-    print("Бот запущений і працює!")
+    print("Бот запущений — автоматична оплата працює!")
     app.run_polling(drop_pending_updates=True)
-
 
 if __name__ == "__main__":
     main()
