@@ -4,6 +4,10 @@ from telegram.ext import Application, CommandHandler, MessageHandler, filters, C
 
 TOKEN = os.getenv("BOT_TOKEN")
 
+if not TOKEN:
+    print("ПОМИЛКА: BOT_TOKEN не встановлено в змінних середовища!")
+    exit(1)
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     keyboard = [[InlineKeyboardButton("Оплатить $1 → TON/USDT",
@@ -19,16 +23,14 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 def main():
-    if not TOKEN:
-        print("ПОМИЛКА: BOT_TOKEN не встановлено!")
-        return
+    print("Запускаю бота...")
 
     app = Application.builder().token(TOKEN).build()
-    
+
     app.add_handler(CommandHandler("start", start))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, start))
 
-    print("Бот запущений і працює 24/7!")
+    print("Бот успішно запущений і працює 24/7!")
     app.run_polling(drop_pending_updates=True)
 
 if __name__ == "__main__":
