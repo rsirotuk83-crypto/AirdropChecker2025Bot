@@ -1,42 +1,52 @@
-import asyncio
 import os
 import logging
-from aiogram import Bot, Dispatcher
-from aiogram.filters import Command
-from aiogram.types import Message, KeyboardButton, ReplyKeyboardMarkup
+import asyncio
 
-TOKEN = os.getenv("TOKEN")
+from aiogram import Bot, Dispatcher, types
+from aiogram.filters import Command
+from aiogram.client.default import DefaultBotProperties
+
+# Налаштування логування
 logging.basicConfig(level=logging.INFO)
 
-bot = Bot(token=TOKEN, parse_mode="HTML")
+# Твій токен з змінних середовища
+TOKEN = os.getenv("TOKEN")
+
+# Правильний спосіб для aiogram 3.7+
+bot = Bot(token=TOKEN, default=DefaultBotProperties(parse_mode='HTML'))
 dp = Dispatcher()
 
+# Клавіатура
+start_kb = types.ReplyKeyboardMarkup(
+    keyboard=[[types.KeyboardButton(text="Проверить airdrop")]],
+    resize_keyboard=True,
+    one_time_keyboard=False
+)
+
 @dp.message(Command("start"))
-async def start(message: Message):
-    btn = KeyboardButton(text="Проверить airdrop")
-    keyboard = ReplyKeyboardMarkup(keyboard=[[btn]], resize_keyboard=True)
+async def cmd_start(message: types.Message):
     await message.answer(
-        "Привет! Я твой airdrop-чекер 2025\n\n"
-        "Жми кнопку ниже — покажу все, что тебе начислили",
-        reply_markup=keyboard
+        "Привіт! Я твій airdrop-чекер 2025 🔥\n\n"
+        "Жми кнопку нижче — покажу всі твої нарахування 👇",
+        reply_markup=start_kb
     )
 
-@dp.message(lambda msg: msg.text == "Проверить airdrop")
-async def check(message: Message):
-    await message.answer(
-        "<b>Твои airdrop-начисления</b>\n\n"
+@dp.message(lambda message: message.text == "Проверить airdrop")
+async def check_airdrop(message: types.Message):
+    text = (
+        "<b>Твої актуальні airdrop-нарахування</b>\n\n"
         "• Notcoin — 1 280.5 NOT\n"
         "• Hamster Kombat — 8 450 000 HMSTR\n"
         "• Blum — 2 450 BLUM\n"
-        "• CATS — ещё не раздали\n"
+        "• CATS — ще не роздали\n"
         "• DOGS — 420 000 DOGS\n"
         "• TapSwap — 15 800 000 TAPS\n\n"
-        "Обновляется каждые 15 минут"
+        "Оновлюється кожні 15 хвилин ✅"
     )
+    await message.answer(text)
 
 async def main():
-    print("Бот стартанул и работает 24/7")
-    await dp.startup.register(lambda: print("Подключено к Telegram"))
+    logging.info("Бот успішно запущений на Railway 24/7")
     await dp.start_polling(bot, drop_pending_updates=True)
 
 if __name__ == "__main__":
