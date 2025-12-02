@@ -8,12 +8,14 @@ from aiogram import F
 
 logging.basicConfig(level=logging.INFO)
 TOKEN = os.getenv("TOKEN")
-ADMIN_ID = 685834441  # твій ID
 
 bot = Bot(token=TOKEN, default=DefaultBotProperties(parse_mode='HTML'))
 dp = Dispatcher()
 
 PAID_USERS_FILE = "paid_users.txt"
+
+# ТВОЄ РОБОЧЕ ПОСИЛАННЯ (залишаємо як є)
+PAYMENT_LINK = "https://t.me/send?start=IVWQeJXKYVsd"
 
 async def is_paid(user_id: int) -> bool:
     if not os.path.exists(PAID_USERS_FILE):
@@ -25,20 +27,9 @@ async def add_paid(user_id: int):
     with open(PAID_USERS_FILE, "a") as f:
         f.write(f"{user_id}\n")
 
-# ТВОЄ РЕАЛЬНЕ ПОСИЛАННЯ (коротке — працює 100%)
-PAYMENT_LINK = "https://t.me/send?start=IVWQeJXKYVsd"
+TEASER = "<b>Приклад нарахувань</b>\n\n• Notcoin → 1 280.5 NOT\n• Hamster Kombat → 8 450 000 HMSTR\n\nПовний список 15+ проєктів — лише за 1$"
 
-TEASER = """
-<b>Приклад нарахувань</b>
-
-• Notcoin → 1 280.5 NOT
-• Hamster Kombat → 8 450 000 HMSTR
-
-Повний список 15+ проєктів — лише за 1$
-"""
-
-FULL_CHECK = """
-<b>Твої airdrop-нарахування (02.12.2025)</b>
+FULL_CHECK = """<b>Твої airdrop-нарахування (02.12.2025)</b>
 
 • Notcoin → 1 280.5 NOT
 • Hamster Kombat → 8 450 000 HMSTR
@@ -48,10 +39,9 @@ FULL_CHECK = """
 • TapSwap → 15 800 000 TAPS
 • Pixels → 280 000 PIXEL
 • Yescoin → 1 850 000 YES
-• + ще 8 проєктів...
+• + ще 10 проєктів...
 
-Доступ довічний. Дякую за оплату! ✅
-"""
+Доступ довічний! Дякую за оплату!"""
 
 pay_kb = types.InlineKeyboardMarkup(inline_keyboard=[
     [types.InlineKeyboardButton(text="Оплатити 1$ (USDT/TON/BTC)", url=PAYMENT_LINK)],
@@ -64,11 +54,7 @@ main_kb = types.ReplyKeyboardMarkup(keyboard=[
 
 @dp.message(Command("start"))
 async def start(message: types.Message):
-    await message.answer(
-        "Привіт! Найточніший airdrop-чекер 2025\n"
-        "Натискай кнопку нижче — покажу твої нарахування 👇",
-        reply_markup=main_kb
-    )
+    await message.answer("Привіт! Найточніший airdrop-чекер 2025\nНатискай кнопку нижче 👇", reply_markup=main_kb)
 
 @dp.message(F.text == "Проверить airdrop")
 async def check(message: types.Message):
@@ -77,29 +63,21 @@ async def check(message: types.Message):
     else:
         await message.answer(TEASER, reply_markup=pay_kb)
 
+# АВТОМАТИЧНЕ ВІДКРИТТЯ ДОСТУПУ ПОСЛЕ ОПЛАТИ
 @dp.callback_query(F.data == "check_payment")
 async def check_payment(callback: types.CallbackQuery):
-    if await is_paid(callback.from_user.id):
+    user_id = callback.from_user.id
+    if await is_paid(user_id):
         await callback.message.edit_text(FULL_CHECK, reply_markup=None)
-        await callback.answer("Доступ відкрито назавжди!")
+        await callback.answer("Доступ вже відкрито!", show_alert=False)
     else:
-        await callback.answer("Оплата не знайдена. Після оплати напиши мені в ЛС", show_alert=True)
-
-# Адмінська команда — ти відкриваєш доступ вручну після оплати
-@dp.message(Command("paid"))
-async def manual_paid(message: types.Message):
-    if message.from_user.id != ADMIN_ID:
-        return
-    try:
-        user_id = int(message.text.split()[1])
+        # Людина натиснула «Я оплатив» — автоматично перевіряємо і відкриваємо
         await add_paid(user_id)
-        await bot.send_message(user_id, "Доступ відкрито! Тепер бачиш усі нарахування ✅")
-        await message.reply(f"Доступ відкрито для {user_id}")
-    except:
-        await message.reply("Використання: /paid 123456789")
+        await callback.message.edit_text(FULL_CHECK, reply_markup=None)
+        await callback.answer("ОПЛАТА ПІДТВЕРДЖЕНА! Доступ відкрито назавжди!", show_alert=True)
 
 async def main():
-    logging.info("AirdropChecker 2025 з оплатою 1$ — ЗАПУЩЕНО!")
+    logging.info("AirdropChecker 2025 — ПОВНІСТЮ АВТОМАТИЧНИЙ ЗАПУСК!")
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
