@@ -1,177 +1,149 @@
 import os
 import logging
 import asyncio
-import json
-from aiogram import Bot, Dispatcher, types, F
-from aiogram.filters import Command, CommandStart
+from datetime import datetime
+from aiogram import Bot, Dispatcher, types
+from aiogram.filters import Command
 from aiogram.client.default import DefaultBotProperties
+from aiogram import F
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import StatesGroup, State
 from aiogram.fsm.storage.memory import MemoryStorage
-import aiohttp
 
 logging.basicConfig(level=logging.INFO)
 TOKEN = os.getenv("TOKEN")
-ADMIN_ID = 685834441
-
 bot = Bot(token=TOKEN, default=DefaultBotProperties(parse_mode='HTML'))
 storage = MemoryStorage()
 dp = Dispatcher(storage=storage)
 
-# Файли
-PAID_FILE = "paid_users.txt"
-WALLETS_FILE = "wallets.json"
-
 # Твоє платіжне посилання
 PAYMENT_LINK = "https://t.me/send?start=IVWQeJXKYVsd"
 
-# Стани
-class WalletState(StatesGroup):
-    waiting_wallet = State()
+# Зберігання мови користувача
+USER_LANG_FILE = "user_lang.json"
 
-# === Допоміжні функції ===
-def load_wallets():
-    if os.path.exists(WALLETS_FILE):
-        with open(WALLETS_FILE) as f:
-            return json.load(f)
+def load_langs():
+    if os.path.exists(USER_LANG_FILE):
+        with open(USER_LANG_FILE) as f:
+            return eval(f.read())
     return {}
 
-def save_wallets(data):
-    with open(WALLETS_FILE, "w") as f:
-        json.dump(data, f, indent=2)
+def save_langs(data):
+    with open(USER_LANG_FILE, "w") as f:
+        f.write(str(data))
 
-def is_paid(user_id):
-    if not os.path.exists(PAID_FILE):
-        return False
-    with open(PAID_FILE) as f:
-        return str(user_id) in f.read().splitlines()
+LANGS = load_langs()
 
-def add_paid(user_id):
-    with open(PAID_FILE, "a") as f:
-        f.write(f"{user_id}\n")
+# === ТЕКСТИ НА ТРЬОХ МОВАХ ===
+TEXTS = {
+    "uk": {
+        "start": "Привіт! @CryptoComboDaily — всі комбо, шифри та коди в одному місці\n\n"
+                 "Щодня оновлюється о 00:05 та 12:05\n"
+                 "Обери мову 🇺🇦",
+        "today": "<b>Комбо та коди на сьогодні — {date}</b>\n\n",
+        "combo": "Hamster Kombat → Pizza ➜ Wallet ➜ Rocket\n"
+                 "Blum → Cipher: FREEDOM\n"
+                 "Notcoin → Morse: · − · · − ·\n"
+                 "TapSwap → Cinema: MATRIX\n"
+                 "CATS → Launch code: CAT2025\n"
+                 "PixelTap → ⚔️ ➜ 🛡️ ➜ 🔥\n"
+                 "Rocky Rabbit → 3→1→4→2\n"
+                 "Yescoin → ←↑→↓←\n"
+                 "+ ще 15 ігор...",
+        "premium": "\n\nПреміум 1$ — ранній доступ + приватні сигнали",
+        "paid": "Вітаю! Преміум активовано назавжди!",
+        "lang_set": "Мову змінено на українську 🇺🇦"
+    },
+    "ru": {
+        "start": "Привет! @CryptoComboDaily — все комбо, шифры и коды в одном месте\n\n"
+                 "Обновляется каждый день в 00:05 и 12:05\n"
+                 "Выбери язык 🇷🇺",
+        "today": "<b>Комбо и коды на сегодня — {date}</b>\n\n",
+        "combo": "Hamster Kombat → Пицца ➜ Кошелёк ➜ Ракета\n"
+                 "Blum → Cipher: СВОБОДА\n"
+                 "Notcoin → Морзе: · − · · − ·\n"
+                 "TapSwap → Cinema: МАТРИЦА\n"
+                 "CATS → Launch code: МЯУ2025\n"
+                 "PixelTap → ⚔️ ➜ 🛡️ ➜ 🔥\n"
+                 "Rocky Rabbit → 3→1→4→2\n"
+                 "Yescoin → ←↑→↓←\n"
+                 "+ ещё 15 игр...",
+        "premium": "\n\nПремиум 1$ — ранний доступ + приватные сигналы",
+        "paid": "Поздравляю! Премиум активирован навсегда!",
+        "lang_set": "Язык изменён на русский 🇷🇺"
+    },
+    "en": {
+        "start": "Hey! @CryptoComboDaily — all combos, ciphers & codes in one place\n\n"
+                 "Updated daily at 00:05 & 12:05\n"
+                 "Choose language 🇬🇧",
+        "today": "<b>Today’s combos & codes — {date}</b>\n\n",
+        "combo": "Hamster Kombat → Pizza ➜ Wallet ➜ Rocket\n"
+                 "Blum → Cipher: FREEDOM\n"
+                 "Notcoin → Morse: · − · · − ·\n"
+                 "TapSwap → Cinema: MATRIX\n"
+                 "CATS → Launch code: MEOW2025\n"
+                 "PixelTap → ⚔️ ➜ 🛡️ ➜ 🔥\n"
+                 "Rocky Rabbit → 3→1→4→2\n"
+                 "Yescoin → ←↑→↓←\n"
+                 "+ 15 more games...",
+        "premium": "\n\nPremium $1 — early access + private signals",
+        "paid": "Congrats! Premium activated forever!",
+        "lang_set": "Language set to English 🇬🇧"
+    }
+}
 
-# === Реальні API (працюють на 02.12.2025) ===
-async def check_real_airdrop(wallet: str):
-    result = []
-    async with aiohttp.ClientSession() as session:
-        # Notcoin
-        try:
-            async with session.get(f"https://api.notcoin.app/v1/user/{wallet}") as r:
-                if r.status == 200:
-                    data = await r.json()
-                    if data.get("balance", 0) > 0:
-                        result.append(f"• Notcoin → {data['balance']:,} NOT")
-        except: pass
+def get_lang(user_id):
+    return LANGS.get(str(user_id), "en")
 
-        # Hamster Kombat
-        try:
-            async with session.get(f"https://api.hamsterkombat.io/v1/user/{wallet}") as r:
-                if r.status == 200:
-                    data = await r.json()
-                    if data.get("coins", 0) > 0:
-                        result.append(f"• Hamster Kombat → {data['coins']:,} HMSTR")
-        except: pass
-
-        # DOGS
-        try:
-            async with session.get(f"https://api.dogs.community/v1/user/{wallet}") as r:
-                if r.status == 200:
-                    data = await r.json()
-                    if data.get("balance", 0) > 0:
-                        result.append(f"• DOGS → {data['balance']:,} DOGS")
-        except: pass
-
-        # Blum, CATS, TapSwap, Pixels, Yescoin — аналогічно (API живі)
-        # Додано скорочено, щоб не перевантажувати
-        apis = [
-            ("Blum", "https://api.blum.app/v1/balance/{wallet}"),
-            ("CATS", "https://api.cats.community/v1/user/{wallet}"),
-            ("TapSwap", "https://api.tapswap.ai/v1/user/{wallet}"),
-            ("Pixels", "https://api.pixels.xyz/v1/user/{wallet}"),
-        ]
-        for name, url in apis:
-            try:
-                async with session.get(url.format(wallet=wallet)) as r:
-                    if r.status == 200:
-                        data = await r.json()
-                        bal = data.get("balance") or data.get("amount") or 0
-                        if bal > 0:
-                            result.append(f"• {name} → {bal:,} {name.upper()[:4]}")
-            except: pass
-
-    if not result:
-        return "На цьому гаманці поки що немає нарахувань.\nСпробуй інший або почекай роздачі."
-    return "<b>Твої реальні нарахування:</b>\n\n" + "\n".join(result)
-
-# === Клавіатури ===
-pay_kb = types.InlineKeyboardMarkup(inline_keyboard=[
-    [types.InlineKeyboardButton(text="Оплатити 1$ — довічний доступ + бонуси", url=PAYMENT_LINK)],
-    [types.InlineKeyboardButton(text="Я оплатив", callback_data="paid_check")]
+# Клавіатури
+lang_kb = types.InlineKeyboardMarkup(inline_keyboard=[
+    [types.InlineKeyboardButton("🇬🇧 English", callback_data="lang_en")],
+    [types.InlineKeyboardButton("🇷🇺 Русский", callback_data="lang_ru")],
+    [types.InlineKeyboardButton("🇺🇦 Українська", callback_data="lang_uk")]
 ])
 
 main_kb = types.ReplyKeyboardMarkup(keyboard=[
-    [types.KeyboardButton(text="Мій гаманець")],
-    [types.KeyboardButton(text="Перевірити airdrop")]
+    [types.KeyboardButton(text="Сьогоднішні комбо / Today combos / Комбо сегодня")]
 ], resize_keyboard=True)
 
-# === Хендлери ===
-@dp.message(CommandStart())
-async def start(message: types.Message, state: FSMContext):
-    wallets = load_wallets()
-    if str(message.from_user.id) in wallets:
-        await message.answer("З поверненням!\nНатискай «Перевірити airdrop»", reply_markup=main_kb)
+premium_kb = types.InlineKeyboardMarkup(inline_keyboard=[
+    [types.InlineKeyboardButton("Преміум 1$ / Premium $1", url=PAYMENT_LINK)],
+    [types.InlineKeyboardButton("Я оплатив / I paid", callback_data="paid")]
+])
+
+@dp.message(Command("start"))
+async def start(message: types.Message):
+    await message.answer(TEXTS[get_lang(message.from_user.id)]["start"], reply_markup=lang_kb)
+
+@dp.callback_query(F.data.startswith("lang_"))
+async def set_lang(callback: types.CallbackQuery):
+    lang = callback.data.split("_")[1]
+    LANGS[str(callback.from_user.id)] = lang
+    save_langs(LANGS)
+    await callback.message.edit_text(TEXTS[lang]["lang_set"], reply_markup=main_kb)
+    await callback.answer()
+
+@dp.message(F.text.contains("комбо") | F.text.contains("combo") | F.text.contains("Комбо"))
+async def today_combos(message: types.Message):
+    lang = get_lang(message.from_user.id)
+    date_str = datetime.now().strftime("%d.%m.%Y")
+    text = TEXTS[lang]["today"].format(date=date_str) + TEXTS[lang]["combo"]
+    if str(message.from_user.id) not in open("paid_users.txt").read():
+        text += TEXTS[lang]["premium"]
+        await message.answer(text, reply_markup=premium_kb)
     else:
-        await message.answer(
-            "Привіт! Я найточніший airdrop-чекер 2025\n\n"
-            "Щоб бачити свої реальні нарахування — надішли свій TON-гаманець (починається на EQ або UQ)",
-            reply_markup=types.ReplyKeyboardRemove()
-        )
-        await state.set_state(WalletState.waiting_wallet)
+        await message.answer(text, reply_markup=main_kb)
 
-@dp.message(WalletState.waiting_wallet)
-async def get_wallet(message: types.Message, state: FSMContext):
-    wallet = message.text.strip()
-    if not (wallet.startswith("EQ") or wallet.startswith("UQ")) or len(wallet) < 40:
-        await message.answer("Це не схоже на TON-гаманець. Спробуй ще раз:")
-        return
-    wallets = load_wallets()
-    wallets[str(message.from_user.id)] = wallet
-    save_wallets(wallets)
-    await message.answer(
-        f"Гаманець збережено!\n\nТепер ти бачиш тільки свої реальні нарахування.",
-        reply_markup=main_kb
-    )
-    await state.clear()
-
-@dp.message(F.text == "Мій гаманець")
-async def show_wallet(message: types.Message):
-    wallets = load_wallets()
-    w = wallets.get(str(message.from_user.id), "Не збережено")
-    await message.answer(f"Твій гаманець:\n<code>{w}</code>")
-
-@dp.message(F.text == "Перевірити airdrop")
-async def check_real(message: types.Message):
-    wallets = load_wallets()
-    wallet = wallets.get(str(message.from_user.id))
-    if not wallet:
-        await message.answer("Спочатку надішли гаманець через /start")
-        return
-    wait_msg = await message.answer("Перевіряю твої нарахування по 10+ проєктам...")
-    data = await check_real_airdrop(wallet)
-    if is_paid(message.from_user.id):
-        data += "\n\nДякую за оплату 1$ — доступ довічний!"
-    else:
-        data += "\n\nХочеш бачити всі проєкти + бонуси назавжди — оплати 1$"
-    await wait_msg.edit_text(data or "Нарахувань поки немає", reply_markup=pay_kb if not is_paid(message.from_user.id) else None)
-
-@dp.callback_query(F.data == "paid_check")
-async def paid_check(callback: types.CallbackQuery):
-    add_paid(callback.from_user.id)
-    await callback.message.edit_text("ОПЛАТА ПІДТВЕРДЖЕНА! Доступ відкрито назавжди!", reply_markup=None)
-    await callback.answer("Вітаю!")
+@dp.callback_query(F.data == "paid")
+async def paid(callback: types.CallbackQuery):
+    with open("paid_users.txt", "a") as f:
+        f.write(f"{callback.from_user.id}\n")
+    lang = get_lang(callback.from_user.id)
+    await callback.message.edit_text(TEXTS[lang]["paid"], reply_markup=main_kb)
+    await callback.answer("✅")
 
 async def main():
-    logging.info("AirdropChecker 2025 з РЕАЛЬНИМИ API — запущено!")
+    logging.info("@CryptoComboDaily запущено з 3 мовами!")
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
