@@ -10,7 +10,7 @@ from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import CommandStart, Command
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
-from aiogram.exceptions import TelegramBadRequest # ІМПОРТУЄМО ДЛЯ ОБРОБКИ ПОМИЛОК
+from aiogram.exceptions import TelegramBadRequest
 
 # Налаштування логування
 logging.basicConfig(level=logging.INFO)
@@ -38,10 +38,44 @@ API_HEADERS = {
     "Telegram-Bot-Api-Token": CRYPTO_BOT_TOKEN
 }
 
-# Стан підписки (імітація бази даних в пам'яті)
-# Ключ: user_id (int), Значення: True (bool)
+# --- ГЛОБАЛЬНИЙ СТАН (Імітація БД) ---
+DB_FILE = "db_state.json"
 USER_SUBSCRIPTIONS: Dict[int, bool] = {} 
 IS_ACTIVE = False # Глобальний стан активації комбо
+COMBO_CONTENT: str = "❌ **Комбо ще не встановлено адміністратором\.**" # Нова змінна для контенту
+
+# --- Утиліти для персистентності (Імітація БД) ---
+
+def load_persistent_state():
+    """Завантажує глобальний стан з файлу при старті бота."""
+    global USER_SUBSCRIPTIONS, IS_ACTIVE, COMBO_CONTENT
+    if os.path.exists(DB_FILE):
+        try:
+            with open(DB_FILE, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+                # Перевіряємо, чи існують ключі перед завантаженням
+                USER_SUBSCRIPTIONS = {int(k): v for k, v in data.get("subscriptions", {}).items()}
+                IS_ACTIVE = data.get("is_active", False)
+                COMBO_CONTENT = data.get("combo_content", "❌ **Комбо ще не встановлено адміністратором\.**")
+            logging.info("Глобальний стан завантажено з файлу.")
+        except Exception as e:
+            logging.error(f"Помилка завантаження стану з JSON: {e}")
+            
+def save_persistent_state():
+    """Зберігає глобальний стан у файл."""
+    global USER_SUBSCRIPTIONS, IS_ACTIVE, COMBO_CONTENT
+    data = {
+        "subscriptions": USER_SUBSCRIPTIONS,
+        "is_active": IS_ACTIVE,
+        "combo_content": COMBO_CONTENT
+    }
+    try:
+        with open(DB_FILE, 'w', encoding='utf-8') as f:
+            json.dump(data, f, ensure_ascii=False, indent=4)
+        logging.info("Глобальний стан збережено до файлу.")
+    except Exception as e:
+        logging.error(f"Помилка збереження стану до JSON: {e}")
+
 
 # --- Утиліти для екранування ---
 
@@ -199,45 +233,25 @@ async def command_combo_handler(message: types.Message, bot: Bot) -> None:
     
     # КЛЮЧОВА ЛОГІКА ДОСТУПУ: Адмін АБО Глобальна Активація АБО Індивідуальна Преміум-підписка
     if is_admin or IS_ACTIVE or is_premium:
-        # ВИПРАВЛЕНО: Використовуємо сирий рядок r"""...""" для уникнення SyntaxWarning
-        combo_text_raw = r"""
-📅 **Комбо та коди на {date_str}**
-*(Ранній доступ Premium)*
+        # !!! ТЕПЕР ЧИТАЄМО З ГЛОБАЛЬНОЇ ЗМІННОЇ COMBO_CONTENT
         
-*Hamster Kombat* \u2192 Pizza \u2192 Wallet \u2192 Rocket
-*Blum* \u2192 Cipher: FREEDOM
-*TapSwap* \u2192 MATRIX
-*CATS* \u2192 MEOW2025
-*Rocky Rabbit* \u2192 3\u21921\u21924\u21922
-*Yescoin* \u2192 \u2191\u2192\u2193\u2192\u2191
-*DOGS* \u2192 DOGS2025
-*PixelTap* \u2192 FIRE ✨
-*W-Coin* \u2192 A\u2192B\u2192C\u2192D
-*Memefi* \u2192 LFG
-*DotCoin* \u2192 PRO
-*BountyBot* \u2192 BTC
-*NEAR Wallet* \u2192 BONUS
-*Hot Wallet* \u2192 MOON
-*Avagold* \u2192 GOLD
-*CEX\.IO* \u2192 STAKE 
-*Pocketfi* \u2192 POCKET
-*Seedify* \u2192 SEED
-*QDROP* \u2192 AIRDROP
-*MetaSense* \u2192 MET
-*SQUID* \u2192 FISH
+        # Додаємо актуальну дату до контенту
+        date_str = datetime.now().strftime(r'%d\.%m\.%Y')
         
-**\+ ще 5-7 рідкісних комбо\.\.\.**
-        """.format(date_str=datetime.now().strftime(r'%d\.%m\.%Y'))
-        
-        final_combo_text = escape_all_except_formatting(combo_text_raw)
+        # Створюємо фінальний текст, замінюючи placeholder дати, якщо він є у COMBO_CONTENT
+        if "{date_str}" in COMBO_CONTENT:
+            combo_text_with_date = COMBO_CONTENT.format(date_str=date_str)
+        else:
+            # Якщо адмін не додав placeholder, додаємо дату на початок
+            combo_text_with_date = f"📅 **Комбо та коди на {date_str}**\n\n{COMBO_CONTENT}"
+            
+        final_combo_text = escape_all_except_formatting(combo_text_with_date)
         
         try:
-            # ВИПРАВЛЕНО: Використовуємо bot.send_message
             await bot.send_message(chat_id=message.chat.id, text=final_combo_text)
         except TelegramBadRequest as e:
             logging.error(f"Помилка TelegramBadRequest при відправці комбо: {e}")
             
-            # ВИПРАВЛЕНО: Використовуємо bot.send_message
             error_message_raw = r"❌ **Помилка відображення комбо**\. Виникла проблема з форматуванням Telegram\. Спробуйте пізніше або зверніться до адміністратора\."
             await bot.send_message(
                 chat_id=message.chat.id, 
@@ -249,7 +263,6 @@ async def command_combo_handler(message: types.Message, bot: Bot) -> None:
             [types.InlineKeyboardButton(text="Отримати Premium 🔑", callback_data="get_premium")],
         ])
         
-        # ВИПРАВЛЕНО: Використовуємо сирий рядок r"""...""" для уникнення SyntaxWarning
         premium_message_raw = r"""
 🔒 **Увага\!** Щоб отримати актуальні комбо та коди, вам потрібна Premium\-підписка\.
 
@@ -257,12 +270,38 @@ async def command_combo_handler(message: types.Message, bot: Bot) -> None:
 """ 
         premium_message = escape_all_except_formatting(premium_message_raw)
         
-        # ВИПРАВЛЕНО: message.answer() може використовуватись, оскільки це обробник команди Message, 
-        # і message вже прив'язаний до bot.
         await message.answer(
             premium_message,
             reply_markup=keyboard
         )
+
+# НОВИЙ ХЕНДЛЕР: Встановлення нового контенту комбо (Тільки для адміна)
+async def command_set_combo(message: types.Message):
+    """Дозволяє адміністратору встановити новий текст комбо."""
+    global COMBO_CONTENT
+    
+    # Видаляємо команду /set_combo і прибираємо зайві пробіли на початку/кінці
+    new_combo_text = message.text.replace('/set_combo', '', 1).strip()
+    
+    if not new_combo_text:
+        # ВИПРАВЛЕНО: Використовуємо сирий рядок r"""...""" для уникнення SyntaxWarning
+        usage_message_raw = r"⚠️ **Використання:** `\/set\_combo \{ваш\_текст\_комбо\_тут\}`"
+        await message.answer(escape_all_except_formatting(usage_message_raw))
+        return
+        
+    COMBO_CONTENT = new_combo_text
+    save_persistent_state() # Зберігаємо новий контент
+
+    # ВИПРАВЛЕНО: Використовуємо сирий рядок r"""...""" для уникнення SyntaxWarning
+    success_message_raw = r"✅ **Новий контент комбо успішно встановлено\.**"
+    await message.answer(escape_all_except_formatting(success_message_raw))
+    
+    # Показуємо новий контент, щоб переконатися, що все виглядає добре
+    mock_message = types.Message(message_id=message.message_id, 
+                                     chat=message.chat, 
+                                     from_user=message.from_user, 
+                                     date=datetime.now())
+    await command_combo_handler(mock_message, message.bot) # Викликаємо комбо-хендлер для превью
 
 # Хендлер команди /admin_menu
 async def admin_menu_handler(message: types.Message):
@@ -291,6 +330,7 @@ async def inline_callback_handler(callback: types.CallbackQuery, bot: Bot):
             
         elif callback.data == "activate_combo":
             IS_ACTIVE = True
+            save_persistent_state() # Зберігаємо зміну стану
             await callback.answer("Комбо активовано!")
             text, keyboard = _build_admin_menu_content()
             await callback.message.edit_text(text, reply_markup=keyboard, parse_mode=ParseMode.MARKDOWN_V2) 
@@ -298,6 +338,7 @@ async def inline_callback_handler(callback: types.CallbackQuery, bot: Bot):
             
         elif callback.data == "deactivate_combo":
             IS_ACTIVE = False
+            save_persistent_state() # Зберігаємо зміну стану
             await callback.answer("Комбо деактивовано!")
             text, keyboard = _build_admin_menu_content()
             await callback.message.edit_text(text, reply_markup=keyboard, parse_mode=ParseMode.MARKDOWN_V2) 
@@ -313,7 +354,8 @@ async def inline_callback_handler(callback: types.CallbackQuery, bot: Bot):
     if callback.data == "get_premium":
         # Перевірка: якщо адмін, то не створюємо інвойс, а активуємо вручну (для тестування)
         if user_id == ADMIN_ID:
-             USER_SUBSCRIPTIONS[user_id] = True 
+             USER_SUBSCRIPTIONS[user_id] = True
+             save_persistent_state() # Зберігаємо зміну стану
              await callback.answer("Для адміністратора Premium активовано автоматично!")
              # Повертаємося в головне меню, щоб оновити кнопки
              welcome_message, keyboard = _build_start_message_content(
@@ -341,7 +383,6 @@ async def inline_callback_handler(callback: types.CallbackQuery, bot: Bot):
                     [types.InlineKeyboardButton(text="Я сплатив 💸 (Перевірити)", callback_data=f"check_payment_{invoice_id}")]
                 ])
                 
-                # ВИПРАВЛЕНО: Використовуємо сирий рядок r"""...""" для уникнення SyntaxWarning
                 payment_message_raw = r"""
 💰 **Оплата Premium**
 
@@ -371,7 +412,6 @@ async def inline_callback_handler(callback: types.CallbackQuery, bot: Bot):
                                      from_user=callback.from_user, 
                                      date=datetime.now())
                                      
-        # ВИПРАВЛЕНО: ТЕПЕР ПЕРЕДАЄМО bot ЯВНО, щоб message.answer() працювало через bot.send_message
         await command_combo_handler(mock_message, bot)
 
 
@@ -390,8 +430,8 @@ async def check_payment_handler(callback: types.CallbackQuery):
             
             if status == 'paid':
                 USER_SUBSCRIPTIONS[user_id] = True 
+                save_persistent_state() # Зберігаємо зміну стану
                 
-                # ВИПРАВЛЕНО: Використовуємо сирий рядок r"""...""" для уникнення SyntaxWarning
                 success_message_raw = r"""
 🎉 **Оплата успішна\!** Ви отримали Premium\-доступ\.
 Надішліть `\/combo` або натисніть кнопку 'Отримати комбо зараз' для актуальних кодів\.
@@ -413,7 +453,6 @@ async def check_payment_handler(callback: types.CallbackQuery):
                 return
             
             elif status == 'expired':
-                # ВИПРАВЛЕНО: Використовуємо сирий рядок r"""...""" для уникнення SyntaxWarning
                 expired_message_raw = r"❌ **Термін дії інвойсу сплив\.** Будь ласка, створіть новий інвойс для оплати\."
                 expired_message = escape_all_except_formatting(expired_message_raw)
                 
@@ -440,7 +479,6 @@ async def check_payment_handler(callback: types.CallbackQuery):
 
 # --- HTTP запити до Crypto Bot API ---
 
-# (create_invoice_request та check_invoice_status залишаються без змін)
 async def create_invoice_request(user_id: int, bot_username: str) -> dict[str, Any]:
     """Створює інвойс на 1 TON через Crypto Bot API."""
     url = f"{CRYPTO_BOT_API_URL}/createInvoice"
@@ -511,6 +549,10 @@ async def check_invoice_status(invoice_id: str) -> dict[str, Any]:
 
 async def main() -> None:
     """Головна функція запуску бота. Тут відбувається коректна реєстрація хендлерів."""
+    
+    # !!! КРОК 1: Завантажуємо стан перед запуском бота
+    load_persistent_state() 
+    
     bot = setup_bot()
     dp = Dispatcher()
 
@@ -518,11 +560,11 @@ async def main() -> None:
     
     # 1. Команди (Message Handlers)
     dp.message.register(command_start_handler, CommandStart())
-    # ВИПРАВЛЕНО: Реєструємо команду /combo з обов'язковим передаванням бота
     dp.message.register(command_combo_handler, Command("combo"))
     
-    # Реєстрація адмін-меню тільки для ADMIN_ID
+    # Реєстрація адмін-меню та нової команди /set_combo тільки для ADMIN_ID
     dp.message.register(admin_menu_handler, Command("admin_menu"), F.from_user.id == ADMIN_ID)
+    dp.message.register(command_set_combo, Command("set_combo"), F.from_user.id == ADMIN_ID)
 
     # 2. Обробники Callback (Inline Button Handlers)
     # Реєстрація загальних колбеків
@@ -538,7 +580,6 @@ async def main() -> None:
     )
 
     logging.info("Бот запущено. Починаю отримувати оновлення...")
-    # Починаємо обробку оновлень
     await dp.start_polling(bot)
 
 
