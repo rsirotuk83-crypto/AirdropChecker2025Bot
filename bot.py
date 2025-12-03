@@ -7,6 +7,9 @@ from aiogram.enums import ParseMode
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, Message
 from aiogram.filters import CommandStart, Command
 
+# Ініціалізуємо диспетчер ГЛОБАЛЬНО, щоб хендлери могли його знайти
+dp = Dispatcher()
+
 # --- 1. КОНСТАНТИ ТА КОНФІГУРАЦІЯ ---
 
 # Отримання токенів з системних змінних Railway
@@ -214,7 +217,7 @@ async def command_start_handler(message: Message) -> None:
         [InlineKeyboardButton(text="🔑 /combo", callback_data="show_combo")],
     ])
 
-    await message.answer(get_text(user_id, 'welcome'), reply_markup=keyboard)
+    await message.answer(get_text(user_id, 'welcome'), reply_markup=keyboard, parse_mode=ParseMode.MARKDOWN)
 
 # Обробник команди /combo та натискання кнопки "Сьогоднішнє комбо"
 @dp.message(Command("combo"))
@@ -364,9 +367,8 @@ async def main() -> None:
     if not ADMIN_ID:
         print("УВАГА: Не встановлено ADMIN_ID. Адмін-команди не працюватимуть.")
 
-    global dp # Потрібно для доступу до диспетчера
-    dp = Dispatcher()
-    bot = Bot(BOT_TOKEN, parse_mode=ParseMode.HTML)
+    # FIX: Змінюємо parse_mode на MARKDOWN для коректного відображення жирного тексту в комбо
+    bot = Bot(BOT_TOKEN, parse_mode=ParseMode.MARKDOWN) 
     
     # Визначаємо ім'я бота для використання у посиланні оплати
     bot_info = await bot.get_me()
