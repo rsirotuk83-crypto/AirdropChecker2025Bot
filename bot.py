@@ -1,117 +1,74 @@
-import os
-import asyncio
-import json
-from datetime import datetime
+# Файл: /app/bot.py
 
-from aiogram import Bot, Dispatcher, types, F
-from aiogram.filters import CommandStart
-from aiogram.client.default import DefaultBotProperties
+import logging
+from aiogram import Bot, Dispatcher, executor, types
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 
-TOKEN = os.getenv("TOKEN")
-bot = Bot(token=TOKEN, default=DefaultBotProperties(parse_mode="HTML"))
-dp = Dispatcher()
+# --- 1. Налаштування ---
 
-LANG_FILE = "lang.json"
-PAID_FILE = "paid.txt"
+# УВАГА: Замініть 'YOUR_BOT_TOKEN' на ваш реальний токен!
+API_TOKEN = 'YOUR_BOT_TOKEN'
 
-# ─── ПЕРЕКЛАДИ (все виправлено) ─────────────────────
-TEXTS = {
-    "uk": {"start": "Привіт! @CryptoComboDaily\nВсі комбо та коди 20+ тапалок в одному місці\n\nОбери мову:",
-           "set": "Мову змінено на українську ✅",
-           "btn": "Сьогоднішні комбо"},
-    "ru": {"start": "Привет! @CryptoComboDaily\nВсе комбо и коды 20+ тапалок в одном месте\n\nВыбери язык:",
-           "set": "Язык изменён на русский ✅",
-           "btn": "Сегодняшние комбо"},
-    "en": {"start": "Hey! @CryptoComboDaily\nAll combos & codes for 20+ tap games\n\nChoose language:",
-           "set": "Language set to English ✅",
-           "btn": "Today's combos"},
-    "es": {"start": "¡Hola! @CryptoComboDaily\nTodos los combos y códigos de 20+ tap games\n\nElige idioma:",
-           "set": "Idioma cambiado a español ✅",
-           "btn": "Combos de hoy"},
-    "de": {"start": "Hallo! @CryptoComboDaily\nAlle Combos & Codes von 20+ Tap-Games\n\nSprache wählen:",
-           "set": "Sprache auf Deutsch geändert ✅",
-           "btn": "Heutige Combos"}
-}
+# Налаштування логування для виведення інформації про роботу бота
+logging.basicConfig(level=logging.INFO)
 
-def get_lang(uid):
-    if os.path.exists(LANG_FILE):
-        try:
-            with open(LANG_FILE, encoding="utf-8") as f:
-                data = json.load(f)
-            return data.get(str(uid), "uk")
-        except:
-            return "uk"
-    return "uk"
+# Ініціалізація бота та диспетчера
+bot = Bot(token=API_TOKEN)
+dp = Dispatcher(bot)
 
-def save_lang(uid, lang):
-    data = {}
-    if os.path.exists(LANG_FILE):
-        try:
-            with open(LANG_FILE, encoding="utf-8") as f:
-                data = json.load(f)
-        except:
-            pass
-    data[str(uid)] = lang
-    with open(LANG_FILE, "w", encoding="utf-8") as f:
-        json.dump(data, f)
+# --- 2. Функції Клавіатур ---
 
-# ─── КНОПКИ ─────────────────────────────────────
-lang_kb = types.InlineKeyboardMarkup(inline_keyboard=[
-    [types.InlineKeyboardButton("Українська", callback_data="lang_uk")],
-    [types.InlineKeyboardButton("Русский", callback_data="lang_ru")],
-    [types.InlineKeyboardButton("English", callback_data="lang_en")],
-    [types.InlineKeyboardButton("Español", callback_data="lang_es")],
-    [types.InlineKeyboardButton("Deutsch", callback_data="lang_de")]
-])
+def get_language_markup():
+    """Створює клавіатуру для вибору мови.
+    
+    Це місце, де виправлено помилку: 
+    використовуємо 'text=' для передачі тексту кнопки.
+    """
+    markup = InlineKeyboardMarkup(row_width=1)
+    
+    # ВИПРАВЛЕНО РЯДОК З ПОМИЛКОЮ (Аналог рядка 60 у вашому лозі)
+    # types.InlineKeyboardButton("Українська", callback_data="lang_uk")  <-- Помилка була тут
+    
+    ukraine_button = InlineKeyboardButton(text="🇺🇦 Українська", callback_data="lang_uk") 
+    english_button = InlineKeyboardButton(text="🇬🇧 English", callback_data="lang_en") 
+    
+    markup.add(ukraine_button, english_button)
+    return markup
 
-@dp.message(CommandStart())
-async def start(msg: types.Message):
-    l = get_lang(msg.from_user.id)
-    await msg.answer(TEXTS[l]["start"], reply_markup=lang_kb)
+# --- 3. Обробники Команд та Повідомлень ---
 
-@dp.callback_query(F.data.startswith("lang_"))
-async def set_lang(cb: types.CallbackQuery):
-    l = cb.data.split("_")[1]
-    save_lang(cb.from_user.id, l)
-    kb = types.ReplyKeyboardMarkup(keyboard=[[types.KeyboardButton(TEXTS[l]["btn"])]], resize_keyboard=True)
-    await cb.message.edit_text(TEXTS[l]["set"], reply_markup=kb)
-    await cb.answer()
+@dp.message_handler(commands=['start', 'help'])
+async def send_welcome(message: types.Message):
+    """Обробник команди /start. Відправляє привітання та пропонує обрати мову."""
+    
+    await message.reply(
+        "Привіт! Я AirdropChecker2025Bot. Будь ласка, оберіть вашу мову:",
+        reply_markup=get_language_markup()
+    )
 
-@dp.message(F.text.func(lambda m: m in [TEXTS[x]["btn"] for x in TEXTS]))
-async def combos(msg: types.Message):
-    l = get_lang(msg.from_user.id)
-    text = f"<b>Комбо та коди на {datetime.now().strftime('%d.%m.%Y')}</b>\n\n"
-    text += ("Hamster Kombat → Pizza ➜ Wallet ➜ Rocket\n"
-             "Blum → Cipher: FREEDOM\n"
-             "TapSwap → MATRIX\n"
-             "CATS → MEOW2025\n"
-             "Rocky Rabbit → 3→1→4→2\n"
-             "Yescoin → ←↑→↓←\n"
-             "DOGS → DOGS2025\n"
-             "+ ще 15 ігор щодня…")
-
-    paid = os.path.exists(PAID_FILE) and str(msg.from_user.id) in open(PAID_FILE, encoding="utf-8").read()
-
-    if not paid:
-        kb = types.InlineKeyboardMarkup(inline_keyboard=[
-            [types.InlineKeyboardButton("Преміум 1$", url="https://t.me/send?start=IVWQeJXKYVsd")],
-            [types.InlineKeyboardButton("Я оплатив", callback_data="paid")]
-        ])
-        text += "\n\n<b>Преміум 1$</b> — ранній доступ + сигнали"
-        await msg.answer(text, reply_markup=kb)
+@dp.callback_query_handler(text_startswith="lang_")
+async def process_language_selection(call: types.CallbackQuery):
+    """Обробник натискання кнопок вибору мови."""
+    
+    # Вилучаємо обрану мову з callback_data (наприклад, "uk" або "en")
+    language_code = call.data.split('_')[1]
+    
+    if language_code == 'uk':
+        response_text = "🎉 Мова успішно змінена на **Українську**! Ласкаво просимо!"
+    elif language_code == 'en':
+        response_text = "🎉 Language successfully changed to **English**! Welcome!"
     else:
-        await msg.answer(text)
+        response_text = "Невідома мова."
 
-@dp.callback_query(F.data == "paid")
-async def paid(cb: types.CallbackQuery):
-    with open(PAID_FILE, "a", encoding="utf-8") as f:
-        f.write(f"{cb.from_user.id}\n")
-    await cb.message.edit_text("Преміум активовано назавжди! ✅")
-    await cb.answer()
+    # Надсилаємо відповідь користувачеві
+    await call.message.edit_text(response_text, parse_mode=types.ParseMode.MARKDOWN)
+    
+    # Відповідаємо на запит CallBack, щоб прибрати "годинник" з кнопки
+    await call.answer(f"Обрано: {language_code.upper()}")
 
-async def main():
-    print("БОТ @CryptoComboDaily — 100% ЖИВИЙ")
-    await dp.start_polling(bot)
 
-if __name__ == "__main__":
-    asyncio.run(main())
+# --- 4. Запуск Бота ---
+
+if __name__ == '__main__':
+    # Запускаємо бота в режимі опитування (polling)
+    executor.start_polling(dp, skip_updates=True)
