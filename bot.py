@@ -53,6 +53,33 @@ def setup_bot():
     )
     return Bot(token=BOT_TOKEN, default=bot_properties)
 
+# --- Хелпер для Admin Menu ---
+
+def _build_admin_menu_content():
+    """Створює текст та клавіатуру для меню адміністратора."""
+    global IS_ACTIVE
+    status_text = "*АКТИВНО*" if IS_ACTIVE else "*НЕАКТИВНО*"
+    
+    if IS_ACTIVE:
+        button_text = "🔴 Деактивувати комбо (Тільки для Premium)"
+        callback = "deactivate_combo"
+    else:
+        button_text = "🟢 Активувати комбо (Доступно всім)"
+        callback = "activate_combo"
+        
+    keyboard = types.InlineKeyboardMarkup(inline_keyboard=[
+        [types.InlineKeyboardButton(text=button_text, callback_data=callback)],
+        # Додаємо кнопку "Назад" на випадок, якщо знадобиться
+        [types.InlineKeyboardButton(text=f"Поточний статус: {status_text}", callback_data="status_info")]
+    ])
+    
+    text = (
+        f"⚙️ **Панель адміністратора**\n\n"
+        f"Поточний стан відображення комбо для всіх користувачів: {status_text}\n\n"
+        "Натисніть кнопку, щоб змінити стан\\."
+    )
+    return text, keyboard
+
 # Хендлер команди /start (БЕЗ ДЕКОРАТОРА)
 async def command_start_handler(message: types.Message) -> None:
     """Обробляє команду /start і показує статус підписки."""
@@ -133,31 +160,12 @@ async def command_combo_handler(message: types.Message) -> None:
             reply_markup=keyboard
         )
 
-# Хендлер для меню адміністратора (БЕЗ ДЕКОРАТОРА)
+# Хендлер команди /admin_menu (БЕЗ ДЕКОРАТОРА)
 async def admin_menu_handler(message: types.Message):
     """Меню для активації/деактивації комбо (доступно лише адміністратору)."""
-    global IS_ACTIVE
-    
-    status_text = "*АКТИВНО*" if IS_ACTIVE else "*НЕАКТИВНО*"
-    
-    if IS_ACTIVE:
-        button_text = "🔴 Деактивувати комбо (Тільки для Premium)"
-        callback = "deactivate_combo"
-    else:
-        button_text = "🟢 Активувати комбо (Доступно всім)"
-        callback = "activate_combo"
-        
-    keyboard = types.InlineKeyboardMarkup(inline_keyboard=[
-        [types.InlineKeyboardButton(text=button_text, callback_data=callback)],
-        [types.InlineKeyboardButton(text=f"Поточний статус: {status_text}", callback_data="status_info")]
-    ])
-    
-    await message.answer(
-        f"⚙️ **Панель адміністратора**\n\n"
-        f"Поточний стан відображення комбо для всіх користувачів: {status_text}\n\n"
-        "Натисніть кнопку, щоб змінити стан\\.",
-        reply_markup=keyboard
-    )
+    # Цей хендлер використовується для команди, тому надсилає НОВЕ повідомлення
+    text, keyboard = _build_admin_menu_content()
+    await message.answer(text, reply_markup=keyboard)
 
 # Хендлер для Inline-кнопок (БЕЗ ДЕКОРАТОРА)
 async def inline_callback_handler(callback: types.CallbackQuery):
@@ -167,20 +175,23 @@ async def inline_callback_handler(callback: types.CallbackQuery):
     
     # Обробка команд активації/деактивації (Тільки для адміна)
     if user_id == ADMIN_ID:
+        
+        # Використовуємо _build_admin_menu_content для оновлення повідомлення
+        
         if callback.data == "activate_combo":
             IS_ACTIVE = True
-            await callback.message.edit_text("✅ **Успіх\\!** Комбо тепер доступне для всіх користувачів\\.", reply_markup=None) # Екрануємо '!'
             await callback.answer("Комбо активовано!")
-            await asyncio.sleep(1)
-            await admin_menu_handler(callback.message)
+            text, keyboard = _build_admin_menu_content()
+            # ВИПРАВЛЕНО: Редагуємо повідомлення, щоб оновити клавіатуру
+            await callback.message.edit_text(text, reply_markup=keyboard) 
             return
             
         elif callback.data == "deactivate_combo":
             IS_ACTIVE = False
-            await callback.message.edit_text("❌ **Успіх\\!** Комбо тепер доступне лише Premium\\-користувачам/Адміну\\.", reply_markup=None) # Екрануємо '!'
             await callback.answer("Комбо деактивовано!")
-            await asyncio.sleep(1)
-            await admin_menu_handler(callback.message)
+            text, keyboard = _build_admin_menu_content()
+            # ВИПРАВЛЕНО: Редагуємо повідомлення, щоб оновити клавіатуру
+            await callback.message.edit_text(text, reply_markup=keyboard) 
             return
             
         elif callback.data == "status_info":
@@ -188,8 +199,11 @@ async def inline_callback_handler(callback: types.CallbackQuery):
             return
             
         elif callback.data == "admin_menu":
+            # ВИПРАВЛЕНО: Обробка натискання кнопки "Управління активацією"
             await callback.answer("Відкриваю адмін-меню...")
-            await admin_menu_handler(callback.message)
+            text, keyboard = _build_admin_menu_content()
+            # ВИПРАВЛЕНО: Редагуємо повідомлення (/start), щоб показати меню адміністратора
+            await callback.message.edit_text(text, reply_markup=keyboard)
             return
 
     # Обробка кнопки "Отримати Premium" (для звичайних користувачів)
@@ -199,6 +213,7 @@ async def inline_callback_handler(callback: types.CallbackQuery):
         # 1. Створення інвойсу через Crypto Bot API
         try:
             # Для цього прикладу, ми не знаємо BOT_USERNAME, тому передаємо 0
+            # У реальному застосуванні, вам потрібно буде отримати username бота (наприклад, через getMe())
             invoice_data = await create_invoice_request(callback.from_user.id, bot_username='0')
             
             if invoice_data and invoice_data.get('ok') and invoice_data['result']['pay_url']:
