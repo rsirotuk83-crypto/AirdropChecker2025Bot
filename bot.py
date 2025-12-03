@@ -55,7 +55,7 @@ FULL_COMBO_TEXT = (
 
 # --- 2. СЛОВНИКИ ТА БАЗА ДАНИХ (для прикладу - в пам'яті) ---
 
-# База даних користувачів (UserID: {'lang': 'ua', 'premium_expiry': datetime_object or None})
+# База даних користувачів (UserID: {'lang': 'ua', 'premium_expiry': datetime_object or None, 'bot_username': str})
 user_data = {}
 
 # Тексти для багатомовності
@@ -131,7 +131,7 @@ def deactivate_premium(user_id):
 
 # --- 4. ФУНКЦІЇ ДЛЯ ВЗАЄМОДІЇ З CRYPTO BOT API ---
 
-async def create_invoice(user_id):
+async def create_invoice(user_id, bot_username):
     """Створює інвойс через Crypto Bot API."""
     try:
         # Використовуємо кастомний payload для ідентифікації користувача та перевірки
@@ -140,7 +140,8 @@ async def create_invoice(user_id):
             "amount": PAYMENT_AMOUNT,
             "description": INVOICE_DESCRIPTION,
             "paid_btn_name": "callback",
-            "paid_btn_url": f"t.me/{Bot.get_current().config.bot_username}?start=check_payment_{user_id}", # Посилання на бота для перевірки
+            # Використовуємо bot_username, отриманий під час запуску
+            "paid_btn_url": f"t.me/{bot_username}?start=check_payment_{user_id}", 
             "payload": f"combo_access_{user_id}", # Кастомний payload для ідентифікації
             "allow_anonymous": True,
             "allow_comments": False,
@@ -203,7 +204,7 @@ async def check_invoice(invoice_id):
 
 # Обробник команди /start
 @dp.message(CommandStart())
-async def command_start_handler(message: Message) -> None:
+async def command_start_handler(message: Message, bot: Bot) -> None:
     user_id = message.from_user.id
     
     # Ініціалізація даних користувача, якщо він новий
@@ -222,7 +223,7 @@ async def command_start_handler(message: Message) -> None:
 # Обробник команди /combo та натискання кнопки "Сьогоднішнє комбо"
 @dp.message(Command("combo"))
 @dp.callback_query(F.data == "show_combo")
-async def show_combo_handler(callback_or_message):
+async def show_combo_handler(callback_or_message, bot: Bot):
     
     if isinstance(callback_or_message, Message):
         message = callback_or_message
@@ -232,6 +233,14 @@ async def show_combo_handler(callback_or_message):
 
     user_id = message.chat.id
     lang = get_user_lang(user_id)
+    
+    # Отримуємо username бота з конфігурації (додано в main)
+    bot_username = bot.config.bot_username 
+    if not bot_username:
+         # Це має бути визначено в main(), але як запасний варіант
+         bot_info = await bot.get_me()
+         bot_username = bot_info.username
+
 
     if is_premium(user_id):
         # Premium: показуємо повний текст
@@ -244,7 +253,8 @@ async def show_combo_handler(callback_or_message):
 
     else:
         # Free: пропонуємо купити
-        pay_url, invoice_id = await create_invoice(user_id)
+        # Передаємо bot_username, щоб функція створення інвойсу не покладалася на get_current()
+        pay_url, invoice_id = await create_invoice(user_id, bot_username) 
 
         if not pay_url:
             await message.answer("❌ **Виникла помилка** при створенні інвойсу. Спробуйте пізніше.")
@@ -367,22 +377,27 @@ async def main() -> None:
     if not ADMIN_ID:
         print("УВАГА: Не встановлено ADMIN_ID. Адмін-команди не працюватимуть.")
 
-    # FIX: Змінюємо parse_mode на MARKDOWN для коректного відображення жирного тексту в комбо
+    # Створюємо екземпляр бота з правильним режимом парсингу
     bot = Bot(BOT_TOKEN, parse_mode=ParseMode.MARKDOWN) 
     
-    # Визначаємо ім'я бота для використання у посиланні оплати
-    bot_info = await bot.get_me()
-    bot.config.bot_username = bot_info.username
-    
-    print(f"Бот @{bot.config.bot_username} запущено. Починаю обробку оновлень...")
-    
-    # Запуск обробки всіх вхідних оновлень
+    # Отримуємо та зберігаємо username бота в його конфігурації
+    # Це необхідно для коректного формування paid_btn_url в інвойсі
+    try:
+        bot_info = await bot.get_me()
+        bot.config.bot_username = bot_info.username
+        print(f"Бот @{bot.config.bot_username} запущено. Починаю обробку оновлень...")
+    except Exception as e:
+        print(f"ПОМИЛКА: Не вдалося отримати інформацію про бота. Перевірте BOT_TOKEN. Помилка: {e}")
+        return
+
+    # Запуск обробки всіх вхідних оновлень (обов'язково передаємо об'єкт bot)
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
     try:
+        # Змінюємо asyncio.run, щоб він не приховував помилки
         asyncio.run(main())
     except KeyboardInterrupt:
         print("Бот зупинено вручну.")
     except Exception as e:
-        print(f"Непередбачена помилка: {e}")
+        print(f"Непередбачена помилка в основній функції: {e}")
