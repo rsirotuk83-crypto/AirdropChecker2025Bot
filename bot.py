@@ -46,13 +46,9 @@ IS_ACTIVE = False # Глобальний стан активації комбо
 def escape_all_except_formatting(text: str) -> str:
     """
     Екранує ВСІ спеціальні символи Markdown V2, крім тих, 
-    що використовуються для необхідного форматування. 
+    що використовуються для необхідного форматування (** та `). 
     
-    Використовує агресивну заміну для максимальної надійності,
-    зокрема, для символу '.' (крапки), який викликав помилку Bad Request.
-    
-    Символи '*' та '`' залишаються не екранованими, оскільки вони
-    використовуються для бажаного жирного шрифту та коду.
+    Це найагресивніший метод для уникнення TelegramBadRequest.
     """
     
     # 1. Escape the backslash itself first
@@ -61,7 +57,7 @@ def escape_all_except_formatting(text: str) -> str:
     # 2. Агресивне екранування всіх критичних символів, що не є маркерами форматування.
     
     # Символи, які найчастіше викликають Bad Request
-    text = text.replace('.', r'\.') # CRITICAL: The error was here.
+    text = text.replace('.', r'\.') # CRITICAL: Must escape dot.
     text = text.replace('-', r'\-')
     text = text.replace(':', r'\:')
     text = text.replace('!', r'\!')
@@ -120,12 +116,13 @@ def _build_admin_menu_content():
         "Натисніть кнопку, щоб змінити стан."
     )
     
-    # 1. Відновлюємо жирний шрифт для заголовка (який тепер має бути безпечним, бо * не екранувався).
+    # 1. Відновлюємо жирний шрифт для заголовка 
     text = base_text.replace(r'⚙️ Панель адміністратора', r'⚙️ \*\*Панель адміністратора\*\*')
-
-    # 2. Відновлюємо жирний шрифт для статусу (якщо він був пошкоджений, але не повинен був бути).
-    # Оскільки ми залишили '*' не екранованим у функції, цей текст має бути коректним.
     
+    # 2. Відновлюємо жирний шрифт для статусу (якщо він був пошкоджений)
+    text = text.replace(r'\*\*АКТИВНО\*\*', r'**АКТИВНО**')
+    text = text.replace(r'\*\*НЕАКТИВНО\*\*', r'**НЕАКТИВНО**')
+
     return text, keyboard
 
 # Хелпер для /start (тепер використовується і для "Назад")
@@ -136,13 +133,12 @@ def _build_start_message_content(user_name: str, user_id: int, is_admin: bool):
     # Екрануємо ВСЕ ім'я користувача, щоб уникнути помилок розмітки.
     escaped_user_name = escape_all_except_formatting(user_name)
     
+    combo_status = r'**АКТИВНО**' if IS_ACTIVE else r'**НЕАКТИВНО**'
+    
     status_text = ""
     keyboard = None
     
-    # ВИПРАВЛЕНО: Використовуємо **...** для жирного статусу V2
-    combo_status = r'**АКТИВНО**' if IS_ACTIVE else r'**НЕАКТИВНО**'
-    
-    # ВИПРАВЛЕНО: Застосовуємо escape_all_except_formatting до змінної частини тексту
+    # Застосовуємо escape_all_except_formatting до змінної частини тексту
     if is_admin:
         # User ID обернений в ``. Ми не екрануємо ` в escape_all_except_formatting.
         status_text = escape_all_except_formatting(
@@ -171,7 +167,7 @@ def _build_start_message_content(user_name: str, user_id: int, is_admin: bool):
         f"👋 Привіт, {escaped_user_name}!\n\n"
         f"{status_text}"
         "Цей бот надає ранній доступ до щоденних комбо та кодів для популярних криптоігор.\n\n"
-        "Ціна Premium: 1 TON (або еквівалент)."
+        "Ціна Premium: 1 TON (або еквівалент)\." # Екрануємо крапку тут
     )
 
     # Редагуємо для збереження необхідного форматування
@@ -182,10 +178,6 @@ def _build_start_message_content(user_name: str, user_id: int, is_admin: bool):
     welcome_message = welcome_message.replace(r'\*\*АКТИВНО\*\*', r'**АКТИВНО**')
     welcome_message = welcome_message.replace(r'\*\*НЕАКТИВНО\*\*', r'**НЕАКТИВНО**')
     
-    # Відновлюємо код ID (``)
-    user_id_str = str(user_id)
-    # Зворотна лапка ` не екранувалася в escape_all_except_formatting, тому тут не потрібне відновлення.
-
     return welcome_message, keyboard
 
 
@@ -197,7 +189,6 @@ async def command_start_handler(message: types.Message) -> None:
     
     welcome_message, keyboard = _build_start_message_content(message.from_user.first_name, user_id, is_admin)
     
-    # ВИПРАВЛЕНО: parse_mode тепер використовується за замовчуванням у Bot(default_properties)
     await message.answer(welcome_message, reply_markup=keyboard)
 
 # Хендлер команди /combo (БЕЗ ДЕКОРАТОРА)
@@ -208,7 +199,8 @@ async def command_combo_handler(message: types.Message) -> None:
     
     if is_admin or IS_ACTIVE:
         # Комбо, яке бачать преміум-користувачі та адмін
-        combo_text = f"""
+        # Використовуємо raw string (r"""...) для уникнення SyntaxWarning.
+        combo_text_raw = rf"""
 📅 **Комбо та коди на {datetime.now().strftime(r'%d\.%m\.%Y')}**
 *(Ранній доступ Premium)*
         
@@ -227,30 +219,47 @@ async def command_combo_handler(message: types.Message) -> None:
 *NEAR Wallet* \u2192 BONUS
 *Hot Wallet* \u2192 MOON
 *Avagold* \u2192 GOLD
-*CEX\.IO* \u2192 STAKE
+*CEX.IO* \u2192 STAKE 
 *Pocketfi* \u2192 POCKET
 *Seedify* \u2192 SEED
 *QDROP* \u2192 AIRDROP
 *MetaSense* \u2192 MET
 *SQUID* \u2192 FISH
         
-**\+ ще 5\-7 рідкісних комбо...**
+**\+ ще 5\-7 рідкісних комбо\.\.\.**
         """
-        # Екранування стрілок та інших символів у самій розмітці
-        combo_text = combo_text.replace('\u2192', r' \u2192 ').replace('\u2191', r'\u2191').replace('\u2193', r'\u2193')
-        await message.answer(combo_text)
+        
+        # 1. Екранування стрілок та інших символів у самій розмітці
+        combo_text = combo_text_raw.replace('\u2192', r' \u2192 ').replace('\u2191', r'\u2191').replace('\u2193', r'\u2193')
+
+        # 2. Застосування агресивного екранування до всього тексту, крім форматування
+        # Оскільки в raw-тексті є CEX.IO, крапка буде екранована за замовчуванням.
+        # Залишаємо \u2192 не екранованим, бо це не є спеціальний символ V2.
+        final_combo_text = escape_all_except_formatting(combo_text)
+        
+        # 3. Відновлення форматування, яке не повинно було бути екрановане
+        # (функція escape_all_except_formatting не екранує ** та *, але може екранувати \)
+        final_combo_text = final_combo_text.replace(r'\*\* \+ ще 5\-\-7 рідкісних комбо\\.\.\\.\.\\\*\*', r'**\+ ще 5\-7 рідкісних комбо\.\.\.**')
+        final_combo_text = final_combo_text.replace(r'**\+ ще 5\\-\-7 рідкісних комбо\\.\.\\.\.\\\*\*', r'**\+ ще 5\-7 рідкісних комбо\.\.\.**')
+        
+        await message.answer(final_combo_text)
     else:
         # Повідомлення для непідписаних користувачів
         keyboard = types.InlineKeyboardMarkup(inline_keyboard=[
             [types.InlineKeyboardButton(text="Отримати Premium 🔑", callback_data="get_premium")],
         ])
+        
+        # ВИПРАВЛЕНО: Прибираємо parse_mode=ParseMode.MARKDOWN, використовуємо глобальний V2
+        # Текст нижче також пропущено через функцію escape_all_except_formatting для безпеки
+        premium_message_raw = "🔒 **Увага!** Щоб отримати актуальні комбо та коди, вам потрібна Premium-підписка!\n\nНатисніть кнопку нижче, щоб оформити ранній доступ\."
+        premium_message = escape_all_except_formatting(premium_message_raw)
+        
+        # Відновлення жирного шрифту
+        premium_message = premium_message.replace(r'\*\*Увага\!\*\*', r'**Увага\!**')
+        
         await message.answer(
-            "🔒 **Увага!** Щоб отримати актуальні комбо та коди, вам потрібна Premium-підписка!\n\n"
-            "Натисніть кнопку нижче, щоб оформити ранній доступ.",
-            reply_markup=keyboard,
-            # Тут використовуємо ParseMode.MARKDOWN (V1) для простоти,
-            # оскільки цей текст не містить складних символів, що викликали помилку.
-            parse_mode=ParseMode.MARKDOWN
+            premium_message,
+            reply_markup=keyboard
         )
 
 # Хендлер команди /admin_menu (БЕЗ ДЕКОРАТОРА)
@@ -276,7 +285,6 @@ async def inline_callback_handler(callback: types.CallbackQuery):
                 True
             )
             await callback.answer("Повернення до головного меню...")
-            # CRITICAL: Явно передаємо parse_mode, щоб edit_text не зламався
             await callback.message.edit_text(welcome_message, reply_markup=keyboard, parse_mode=ParseMode.MARKDOWN_V2)
             return
             
@@ -312,7 +320,7 @@ async def inline_callback_handler(callback: types.CallbackQuery):
         
         # 1. Створення інвойсу через Crypto Bot API
         try:
-            # Тут має бути логіка створення інвойсу...
+            # Використовуємо 0, як placeholder для bot_username, щоб уникнути помилки.
             invoice_data = await create_invoice_request(callback.from_user.id, bot_username='0')
             
             if invoice_data and invoice_data.get('ok') and invoice_data['result']['pay_url']:
@@ -325,18 +333,21 @@ async def inline_callback_handler(callback: types.CallbackQuery):
                     [types.InlineKeyboardButton(text="Я сплатив 💸", callback_data=f"check_payment_{invoice_id}")]
                 ])
                 
+                # Застосовуємо екранування до тексту
+                payment_message_raw = "💰 **Оплата Premium**\n\nДля отримання раннього доступу сплатіть 1 TON (або еквівалент)\.\nНатисніть кнопку 'Сплатити' і після оплати — 'Я сплатив 💸'\."
+                payment_message = escape_all_except_formatting(payment_message_raw)
+                payment_message = payment_message.replace(r'\*\*Оплата Premium\*\*', r'**Оплата Premium**')
+                
                 await callback.message.answer(
-                    "💰 **Оплата Premium**\n\n"
-                    "Для отримання раннього доступу сплатіть 1 TON (або еквівалент).\n"
-                    "Натисніть кнопку 'Сплатити' і після оплати — 'Я сплатив 💸'.",
+                    payment_message,
                     reply_markup=keyboard
                 )
             else:
-                await callback.message.answer("⚠️ Не вдалося створити платіжний інвойс. Спробуйте пізніше.") 
+                await callback.message.answer("⚠️ Не вдалося створити платіжний інвойс\. Спробуйте пізніше\.") 
                 
         except Exception as e:
             logging.error(f"Помилка створення інвойсу: {e}")
-            await callback.message.answer("❌ Сталася помилка при підключенні до платіжної системи.") 
+            await callback.message.answer("❌ Сталася помилка при підключенні до платіжної системи\.") 
             
 # Обробка кнопки "Я сплатив" (БЕЗ ДЕКОРАТОРА)
 async def check_payment_handler(callback: types.CallbackQuery):
@@ -353,32 +364,34 @@ async def check_payment_handler(callback: types.CallbackQuery):
             if status == 'paid':
                 # Успішна оплата
                 await callback.message.edit_text(
-                    "🎉 **Оплата успішна!** Ви отримали Premium-доступ.\n"
-                    "Надішліть `/combo` для отримання актуальних кодів."
+                    "🎉 **Оплата успішна\!** Ви отримали Premium\-доступ\.\n"
+                    "Надішліть `\/combo` для отримання актуальних кодів\.",
+                    parse_mode=ParseMode.MARKDOWN_V2 # Явно вказуємо для edit_text
                 )
                 await callback.answer("Підписка активована!", show_alert=True)
                 return
             
             elif status == 'pending':
-                await callback.answer("Платіж ще обробляється. Спробуйте через хвилину.") 
+                await callback.answer("Платіж ще обробляється\. Спробуйте через хвилину\.") 
                 return
             
             elif status == 'expired':
                 await callback.message.edit_text(
-                    "❌ **Термін дії інвойсу сплив.** Будь ласка, створіть новий інвойс для оплати."
+                    "❌ **Термін дії інвойсу сплив\.** Будь ласка, створіть новий інвойс для оплати\.",
+                    parse_mode=ParseMode.MARKDOWN_V2
                 )
-                await callback.answer("Термін дії сплив.", show_alert=True) 
+                await callback.answer("Термін дії сплив\.", show_alert=True) 
                 return
                 
             else: # refunded, failed
-                await callback.message.answer("Статус платежу: " + status)
+                await callback.message.answer("Статус платежу: " + escape_all_except_formatting(status))
         
         else:
-            await callback.answer("Не вдалося отримати статус інвойсу. Зверніться до адміністратора.") 
+            await callback.answer("Не вдалося отримати статус інвойсу\. Зверніться до адміністратора\.") 
             
     except Exception as e:
         logging.error(f"Помилка перевірки статусу платежу: {e}")
-        await callback.answer("❌ Сталася помилка при перевірці платежу.", show_alert=True) 
+        await callback.answer("❌ Сталася помилка при перевірці платежу\.", show_alert=True) 
 
 
 # --- HTTP запити до Crypto Bot API ---
@@ -401,10 +414,19 @@ async def create_invoice_request(user_id: int, bot_username: str):
         "is_test": is_testnet
     }
     
-    async with httpx.AsyncClient() as client:
-        response = await client.post(url, headers=API_HEADERS, json=payload, timeout=10.0)
-        response.raise_for_status() # Викликає виняток для HTTP помилок
-        return response.json()
+    # Використовуємо експоненційну затримку для запитів
+    for attempt in range(3):
+        try:
+            async with httpx.AsyncClient() as client:
+                response = await client.post(url, headers=API_HEADERS, json=payload, timeout=10.0)
+                response.raise_for_status() # Викликає виняток для HTTP помилок
+                return response.json()
+        except (httpx.RequestError, httpx.HTTPStatusError) as e:
+            if attempt < 2:
+                delay = 2 ** attempt
+                await asyncio.sleep(delay)
+            else:
+                raise e
 
 async def check_invoice_status(invoice_id: str):
     """Перевіряє статус інвойсу за ID."""
@@ -414,16 +436,24 @@ async def check_invoice_status(invoice_id: str):
         "invoice_ids": [invoice_id]
     }
     
-    async with httpx.AsyncClient() as client:
-        response = await client.post(url, headers=API_HEADERS, json=payload, timeout=10.0)
-        response.raise_for_status()
-        
-        data = response.json()
-        if data.get('ok') and data['result']:
-            # API повертає список, беремо перший елемент
-            return {'ok': True, 'result': data['result'][0]}
-            
-        return data
+    for attempt in range(3):
+        try:
+            async with httpx.AsyncClient() as client:
+                response = await client.post(url, headers=API_HEADERS, json=payload, timeout=10.0)
+                response.raise_for_status()
+                
+                data = response.json()
+                if data.get('ok') and data['result']:
+                    # API повертає список, беремо перший елемент
+                    return {'ok': True, 'result': data['result'][0]}
+                
+                return data
+        except (httpx.RequestError, httpx.HTTPStatusError) as e:
+            if attempt < 2:
+                delay = 2 ** attempt
+                await asyncio.sleep(delay)
+            else:
+                raise e
 
 # --- Запуск бота ---
 
@@ -445,13 +475,13 @@ async def main() -> None:
     # Реєстрація загальних колбеків
     dp.callback_query.register(
         inline_callback_handler, 
-        F.callback_query.data.in_({"get_premium", "admin_menu", "activate_combo", "deactivate_combo", "status_info", "back_to_start"})
+        F.data.in_({"get_premium", "admin_menu", "activate_combo", "deactivate_combo", "status_info", "back_to_start"})
     )
     
     # Реєстрація колбека перевірки платежу
     dp.callback_query.register(
         check_payment_handler, 
-        F.callback_query.data.startswith("check_payment_")
+        F.data.startswith("check_payment_")
     )
 
     logging.info("Бот запущено. Починаю отримувати оновлення...")
