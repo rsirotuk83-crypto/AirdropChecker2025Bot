@@ -70,7 +70,7 @@ def _build_admin_menu_content():
     keyboard = types.InlineKeyboardMarkup(inline_keyboard=[
         [types.InlineKeyboardButton(text=button_text, callback_data=callback)],
         # Додаємо кнопку "Назад" на випадок, якщо знадобиться
-        [types.InlineKeyboardButton(text=f"Поточний статус: {status_text}", callback_data="status_info")]
+        [types.InlineKeyboardButton(text="⬅️ Назад до /start", callback_data="back_to_start")]
     ])
     
     text = (
@@ -80,12 +80,10 @@ def _build_admin_menu_content():
     )
     return text, keyboard
 
-# Хендлер команди /start (БЕЗ ДЕКОРАТОРА)
-async def command_start_handler(message: types.Message) -> None:
-    """Обробляє команду /start і показує статус підписки."""
-    user_id = message.from_user.id
-    
-    is_admin = user_id == ADMIN_ID
+# Хелпер для /start (тепер використовується і для "Назад")
+def _build_start_message_content(user_name: str, user_id: int, is_admin: bool):
+    """Створює текст та клавіатуру для початкового повідомлення /start."""
+    global IS_ACTIVE
     
     status_text = ""
     keyboard = None
@@ -102,12 +100,21 @@ async def command_start_handler(message: types.Message) -> None:
         ])
 
     welcome_message = (
-        # ВИПРАВЛЕНО: Екрануємо '!' у вітальному повідомленні
-        f"👋 Привіт, {message.from_user.first_name}\\!\n\n"
+        f"👋 Привіт, {user_name}\\!\n\n"
         f"{status_text}"
         "Цей бот надає ранній доступ до щоденних комбо та кодів для популярних криптоігор\\.\n\n"
         "**Ціна Premium:** 1 TON \\(або еквівалент\\)\\."
     )
+    return welcome_message, keyboard
+
+
+# Хендлер команди /start (БЕЗ ДЕКОРАТОРА)
+async def command_start_handler(message: types.Message) -> None:
+    """Обробляє команду /start і показує статус підписки."""
+    user_id = message.from_user.id
+    is_admin = user_id == ADMIN_ID
+    
+    welcome_message, keyboard = _build_start_message_content(message.from_user.first_name, user_id, is_admin)
     
     await message.answer(welcome_message, reply_markup=keyboard)
 
@@ -173,16 +180,26 @@ async def inline_callback_handler(callback: types.CallbackQuery):
     global IS_ACTIVE
     user_id = callback.from_user.id
     
-    # Обробка команд активації/деактивації (Тільки для адміна)
+    # Обробка команд активації/деактивації та навігації (Тільки для адміна)
     if user_id == ADMIN_ID:
         
-        # Використовуємо _build_admin_menu_content для оновлення повідомлення
-        
+        # Обробка "Назад"
+        if callback.data == "back_to_start":
+            welcome_message, keyboard = _build_start_message_content(
+                callback.from_user.first_name, 
+                user_id, 
+                True
+            )
+            await callback.answer("Повернення до головного меню...")
+            await callback.message.edit_text(welcome_message, reply_markup=keyboard)
+            return
+            
+        # Обробка дій в меню адміністратора
         if callback.data == "activate_combo":
             IS_ACTIVE = True
             await callback.answer("Комбо активовано!")
             text, keyboard = _build_admin_menu_content()
-            # ВИПРАВЛЕНО: Редагуємо повідомлення, щоб оновити клавіатуру
+            # Редагуємо повідомлення, щоб оновити клавіатуру
             await callback.message.edit_text(text, reply_markup=keyboard) 
             return
             
@@ -190,7 +207,7 @@ async def inline_callback_handler(callback: types.CallbackQuery):
             IS_ACTIVE = False
             await callback.answer("Комбо деактивовано!")
             text, keyboard = _build_admin_menu_content()
-            # ВИПРАВЛЕНО: Редагуємо повідомлення, щоб оновити клавіатуру
+            # Редагуємо повідомлення, щоб оновити клавіатуру
             await callback.message.edit_text(text, reply_markup=keyboard) 
             return
             
@@ -199,10 +216,10 @@ async def inline_callback_handler(callback: types.CallbackQuery):
             return
             
         elif callback.data == "admin_menu":
-            # ВИПРАВЛЕНО: Обробка натискання кнопки "Управління активацією"
+            # Обробка натискання кнопки "Управління активацією"
             await callback.answer("Відкриваю адмін-меню...")
             text, keyboard = _build_admin_menu_content()
-            # ВИПРАВЛЕНО: Редагуємо повідомлення (/start), щоб показати меню адміністратора
+            # Редагуємо повідомлення (/start), щоб показати меню адміністратора
             await callback.message.edit_text(text, reply_markup=keyboard)
             return
 
@@ -347,7 +364,7 @@ async def main() -> None:
     # Реєстрація загальних колбеків
     dp.callback_query.register(
         inline_callback_handler, 
-        F.callback_query.data.in_({"get_premium", "admin_menu", "activate_combo", "deactivate_combo", "status_info"})
+        F.callback_query.data.in_({"get_premium", "admin_menu", "activate_combo", "deactivate_combo", "status_info", "back_to_start"})
     )
     
     # Реєстрація колбека перевірки платежу
