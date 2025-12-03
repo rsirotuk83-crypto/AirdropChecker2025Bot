@@ -10,6 +10,7 @@ from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import CommandStart, Command
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
+from aiogram.exceptions import TelegramBadRequest # ІМПОРТУЄМО ДЛЯ ОБРОБКИ ПОМИЛОК
 
 # Налаштування логування
 logging.basicConfig(level=logging.INFO)
@@ -51,30 +52,31 @@ def escape_all_except_formatting(text: str) -> str:
     Це найагресивніший метод для уникнення TelegramBadRequest.
     """
     
-    # 1. Escape the backslash itself first
-    # ВИПРАВЛЕНО: Замінюємо одинарний '\' на подвійний '\\'
-    text = text.replace('\\', r'\\') 
-
-    # 2. Агресивне екранування всіх критичних символів, що не є маркерами форматування.
-    # Оскільки ми НЕ екрануємо `*` та `` ` ``, вони зберігають свою функцію форматування.
+    # СИМВОЛИ ДЛЯ ЕКРАНУВАННЯ (Згідно з правилами MarkdownV2)
+    # _, *, [, ], (, ), ~, `, >, #, +, -, =, |, {, }, ., !
     
-    text = text.replace('_', r'\_') # Italics marker
-    text = text.replace('.', r'\.') # CRITICAL: Must escape dot.
-    text = text.replace(':', r'\:')
-    text = text.replace('-', r'\-')
-    text = text.replace('!', r'\!')
+    # 1. Екрануємо зворотний слеш сам по собі ПЕРШИМ, щоб не зламати екранування інших символів
+    text = text.replace('\\', r'\\\\') # ВИПРАВЛЕНО: Замінюємо '\' на '\\\\'
+    
+    # 2. Агресивне екранування всіх критичних символів
+    # Примітка: * та ` не екрануємо, щоб зберегти жирний шрифт та inline-код.
+    
+    text = text.replace('_', r'\_')
+    text = text.replace('[', r'\[')
+    text = text.replace(']', r'\]')
     text = text.replace('(', r'\(')
     text = text.replace(')', r'\)')
+    text = text.replace('~', r'\~')
+    text = text.replace('>', r'\>')
     text = text.replace('#', r'\#')
     text = text.replace('+', r'\+')
+    text = text.replace('-', r'\-')
     text = text.replace('=', r'\=')
     text = text.replace('|', r'\|')
     text = text.replace('{', r'\{')
     text = text.replace('}', r'\}')
-    text = text.replace('>', r'\>')
-    text = text.replace('~', r'\~')
-    text = text.replace('[', r'\[')
-    text = text.replace(']', r'\]')
+    text = text.replace('.', r'\.') # CRITICAL: Екрануємо крапку
+    text = text.replace('!', r'\!')
     
     return text
 
@@ -113,9 +115,8 @@ def _build_start_message_content(user_name: str, user_id: int, is_admin: bool):
     if is_admin:
         status_text_parts.append(f"Глобальна Активність: {combo_status}")
 
-    status_text_raw = "\n".join(status_text_parts) + "\n\n"
-    
     # Застосовуємо escape_all_except_formatting до змінної частини тексту
+    status_text_raw = "\n".join(status_text_parts) + "\n\n"
     status_text = escape_all_except_formatting(status_text_raw)
     
     # Заголовок та основний текст
@@ -202,8 +203,9 @@ async def command_combo_handler(message: types.Message) -> None:
     # КЛЮЧОВА ЛОГІКА ДОСТУПУ: Адмін АБО Глобальна Активація АБО Індивідуальна Преміум-підписка
     if is_admin or IS_ACTIVE or is_premium:
         # Комбо, яке бачать преміум-користувачі та адмін
+        # ЗВЕРНІТЬ УВАГУ: Всі символи, які не є * чи `, мають бути екрановані
         combo_text_raw = f"""
-📅 **Комбо та коди на {datetime.now().strftime('%d.%m.%Y')}**
+📅 **Комбо та коди на {datetime.now().strftime('%d\.%m\.%Y')}**
 *(Ранній доступ Premium)*
         
 *Hamster Kombat* \u2192 Pizza \u2192 Wallet \u2192 Rocket
@@ -221,20 +223,27 @@ async def command_combo_handler(message: types.Message) -> None:
 *NEAR Wallet* \u2192 BONUS
 *Hot Wallet* \u2192 MOON
 *Avagold* \u2192 GOLD
-*CEX.IO* \u2192 STAKE 
+*CEX\.IO* \u2192 STAKE 
 *Pocketfi* \u2192 POCKET
 *Seedify* \u2192 SEED
 *QDROP* \u2192 AIRDROP
 *MetaSense* \u2192 MET
 *SQUID* \u2192 FISH
         
-**+ ще 5-7 рідкісних комбо...**
+**\+ ще 5-7 рідкісних комбо\.\.\.**
         """
         
         # Застосування агресивного екранування до всього тексту
         final_combo_text = escape_all_except_formatting(combo_text_raw)
         
-        await message.answer(final_combo_text)
+        try:
+            await message.answer(final_combo_text)
+        except TelegramBadRequest as e:
+            logging.error(f"Помилка TelegramBadRequest при відправці комбо: {e}")
+            # Надсилаємо повідомлення про помилку у звичайному тексті, щоб користувач її побачив
+            await message.answer(
+                "❌ **Помилка відображення комбо**\. Виникла проблема з форматуванням Telegram\. Спробуйте пізніше або зверніться до адміністратора\."
+            )
     else:
         # Повідомлення для непідписаних користувачів
         keyboard = types.InlineKeyboardMarkup(inline_keyboard=[
