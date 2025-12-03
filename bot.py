@@ -42,7 +42,8 @@ API_HEADERS = {
 DB_FILE = "db_state.json"
 USER_SUBSCRIPTIONS: Dict[int, bool] = {} 
 IS_ACTIVE = False # Глобальний стан активації комбо
-COMBO_CONTENT: str = "❌ **Комбо ще не встановлено адміністратором\.**" # Нова змінна для контенту
+# ВИПРАВЛЕНО: Використання raw string (r"...") для уникнення SyntaxWarning
+COMBO_CONTENT: str = r"❌ **Комбо ще не встановлено адміністратором\.**" # Нова змінна для контенту
 
 # --- Утиліти для персистентності (Імітація БД) ---
 
@@ -56,7 +57,8 @@ def load_persistent_state():
                 # Перевіряємо, чи існують ключі перед завантаженням
                 USER_SUBSCRIPTIONS = {int(k): v for k, v in data.get("subscriptions", {}).items()}
                 IS_ACTIVE = data.get("is_active", False)
-                COMBO_CONTENT = data.get("combo_content", "❌ **Комбо ще не встановлено адміністратором\.**")
+                # ВИПРАВЛЕНО: Використання raw string (r"...") для уникнення SyntaxWarning
+                COMBO_CONTENT = data.get("combo_content", r"❌ **Комбо ще не встановлено адміністратором\.**")
             logging.info("Глобальний стан завантажено з файлу.")
         except Exception as e:
             logging.error(f"Помилка завантаження стану з JSON: {e}")
