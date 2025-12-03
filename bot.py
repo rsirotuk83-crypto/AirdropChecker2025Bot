@@ -60,8 +60,8 @@ def escape_all_except_formatting(text: str) -> str:
     
     text = text.replace('_', r'\_') # Italics marker
     text = text.replace('.', r'\.') # CRITICAL: Must escape dot.
-    text = text.replace('-', r'\-')
     text = text.replace(':', r'\:')
+    text = text.replace('-', r'\-')
     text = text.replace('!', r'\!')
     text = text.replace('(', r'\(')
     text = text.replace(')', r'\)')
@@ -206,8 +206,10 @@ async def command_combo_handler(message: types.Message) -> None:
     # Умова доступу: Адмін АБО Глобальна Активація АБО Індивідуальна Преміум-підписка
     if is_admin or IS_ACTIVE or is_premium:
         # Комбо, яке бачать преміум-користувачі та адмін
-        combo_text_raw = rf"""
-📅 **Комбо та коди на {datetime.now().strftime(r'%d\.%m\.%Y')}**
+        # ВИПРАВЛЕНО: Видалено ручне екранування (\) для символів '.', '-', '+', 
+        # оскільки функція escape_all_except_formatting робить це агресивно.
+        combo_text_raw = f"""
+📅 **Комбо та коди на {datetime.now().strftime('%d.%m.%Y')}**
 *(Ранній доступ Premium)*
         
 *Hamster Kombat* \u2192 Pizza \u2192 Wallet \u2192 Rocket
@@ -218,21 +220,21 @@ async def command_combo_handler(message: types.Message) -> None:
 *Yescoin* \u2192 \u2191\u2192\u2193\u2192\u2191
 *DOGS* \u2192 DOGS2025
 *PixelTap* \u2192 FIRE ✨
-*W\-Coin* \u2192 A\u2192B\u2192C\u2192D
+*W-Coin* \u2192 A\u2192B\u2192C\u2192D
 *Memefi* \u2192 LFG
 *DotCoin* \u2192 PRO
 *BountyBot* \u2192 BTC
 *NEAR Wallet* \u2192 BONUS
 *Hot Wallet* \u2192 MOON
 *Avagold* \u2192 GOLD
-*CEX\.IO* \u2192 STAKE 
+*CEX.IO* \u2192 STAKE 
 *Pocketfi* \u2192 POCKET
 *Seedify* \u2192 SEED
 *QDROP* \u2192 AIRDROP
 *MetaSense* \u2192 MET
 *SQUID* \u2192 FISH
         
-**\+ ще 5\-7 рідкісних комбо\.\.\.**
+**+ ще 5-7 рідкісних комбо...**
         """
         
         # Застосування агресивного екранування до всього тексту
@@ -341,8 +343,10 @@ async def inline_callback_handler(callback: types.CallbackQuery, bot: Bot):
             
     elif callback.data == "show_combo":
         # Перенаправлення на обробник /combo
+        # Виклик command_combo_handler з об'єктом message, який містить user_id
+        await callback.answer("Отримуємо комбо...")
         await command_combo_handler(callback.message)
-        await callback.answer()
+
 
 # Обробка кнопки "Я сплатив"
 async def check_payment_handler(callback: types.CallbackQuery):
