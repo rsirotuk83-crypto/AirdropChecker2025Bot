@@ -75,7 +75,8 @@ async def command_start_handler(message: types.Message) -> None:
         ])
 
     welcome_message = (
-        f"👋 Привіт, {message.from_user.first_name}!\n\n"
+        # ВИПРАВЛЕНО: Екрануємо '!' у вітальному повідомленні
+        f"👋 Привіт, {message.from_user.first_name}\\!\n\n"
         f"{status_text}"
         "Цей бот надає ранній доступ до щоденних комбо та кодів для популярних криптоігор\\.\n\n"
         "**Ціна Premium:** 1 TON \\(або еквівалент\\)\\."
@@ -126,7 +127,8 @@ async def command_combo_handler(message: types.Message) -> None:
             [types.InlineKeyboardButton(text="Отримати Premium 🔑", callback_data="get_premium")],
         ])
         await message.answer(
-            "🔒 **Увага!** Щоб отримати актуальні комбо та коди, вам потрібна Premium\\-підписка\\.\n\n"
+            # ВИПРАВЛЕНО: Екрануємо '!' в повідомленні про відсутність підписки
+            "🔒 **Увага\\!** Щоб отримати актуальні комбо та коди, вам потрібна Premium\\-підписка\\!\n\n"
             "Натисніть кнопку нижче, щоб оформити ранній доступ\\.",
             reply_markup=keyboard
         )
@@ -167,7 +169,7 @@ async def inline_callback_handler(callback: types.CallbackQuery):
     if user_id == ADMIN_ID:
         if callback.data == "activate_combo":
             IS_ACTIVE = True
-            await callback.message.edit_text("✅ **Успіх!** Комбо тепер доступне для всіх користувачів.", reply_markup=None)
+            await callback.message.edit_text("✅ **Успіх\\!** Комбо тепер доступне для всіх користувачів\\.", reply_markup=None) # Екрануємо '!'
             await callback.answer("Комбо активовано!")
             await asyncio.sleep(1)
             await admin_menu_handler(callback.message)
@@ -175,7 +177,7 @@ async def inline_callback_handler(callback: types.CallbackQuery):
             
         elif callback.data == "deactivate_combo":
             IS_ACTIVE = False
-            await callback.message.edit_text("❌ **Успіх!** Комбо тепер доступне лише Premium\\-користувачам/Адміну.", reply_markup=None)
+            await callback.message.edit_text("❌ **Успіх\\!** Комбо тепер доступне лише Premium\\-користувачам/Адміну\\.", reply_markup=None) # Екрануємо '!'
             await callback.answer("Комбо деактивовано!")
             await asyncio.sleep(1)
             await admin_menu_handler(callback.message)
@@ -216,11 +218,11 @@ async def inline_callback_handler(callback: types.CallbackQuery):
                     reply_markup=keyboard
                 )
             else:
-                await callback.message.answer("⚠️ Не вдалося створити платіжний інвойс. Спробуйте пізніше.")
+                await callback.message.answer("⚠️ Не вдалося створити платіжний інвойс\\. Спробуйте пізніше\\.") # Екрануємо '.'
                 
         except Exception as e:
             logging.error(f"Помилка створення інвойсу: {e}")
-            await callback.message.answer("❌ Сталася помилка при підключенні до платіжної системи.")
+            await callback.message.answer("❌ Сталася помилка при підключенні до платіжної системи\\.") # Екрануємо '.'
             
 # Обробка кнопки "Я сплатив" (БЕЗ ДЕКОРАТОРА)
 async def check_payment_handler(callback: types.CallbackQuery):
@@ -237,7 +239,7 @@ async def check_payment_handler(callback: types.CallbackQuery):
             if status == 'paid':
                 # Успішна оплата
                 await callback.message.edit_text(
-                    "🎉 **Оплата успішна!** Ви отримали Premium\\-доступ\\.\n"
+                    "🎉 **Оплата успішна\\!** Ви отримали Premium\\-доступ\\.\n" # Екрануємо '!'
                     "Надішліть `/combo` для отримання актуальних кодів\\."
                 )
                 await callback.answer("Підписка активована!", show_alert=True)
@@ -245,25 +247,25 @@ async def check_payment_handler(callback: types.CallbackQuery):
                 return
             
             elif status == 'pending':
-                await callback.answer("Платіж ще обробляється. Спробуйте через хвилину.")
+                await callback.answer("Платіж ще обробляється\\. Спробуйте через хвилину\\.") # Екрануємо '.'
                 return
             
             elif status == 'expired':
                 await callback.message.edit_text(
-                    "❌ **Термін дії інвойсу сплив.** Будь ласка, створіть новий інвойс для оплати\\."
+                    "❌ **Термін дії інвойсу сплив\\.** Будь ласка, створіть новий інвойс для оплати\\." # Екрануємо '.'
                 )
-                await callback.answer("Термін дії сплив.", show_alert=True)
+                await callback.answer("Термін дії сплив\\.", show_alert=True) # Екрануємо '.'
                 return
                 
             else: # refunded, failed
                 await callback.message.answer("Статус платежу: " + status)
         
         else:
-            await callback.answer("Не вдалося отримати статус інвойсу. Зверніться до адміністратора.")
+            await callback.answer("Не вдалося отримати статус інвойсу\\. Зверніться до адміністратора\\.") # Екрануємо '.'
             
     except Exception as e:
         logging.error(f"Помилка перевірки статусу платежу: {e}")
-        await callback.answer("❌ Сталася помилка при перевірці платежу.", show_alert=True)
+        await callback.answer("❌ Сталася помилка при перевірці платежу\\.", show_alert=True) # Екрануємо '.'
 
 
 # --- HTTP запити до Crypto Bot API ---
