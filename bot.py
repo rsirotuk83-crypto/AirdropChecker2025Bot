@@ -14,19 +14,18 @@ from aiogram.enums import ParseMode
 logging.basicConfig(level=logging.INFO)
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-CRYPTO_BOT_TOKEN = os.getenv("CRYPTO_BOT_TOKEN")
 ADMIN_ID = int(os.getenv("ADMIN_ID", "0"))
 
-if not BOT_TOKEN or not CRYPTO_BOT_TOKEN or not ADMIN_ID:
-    logging.error("Помилка: не встановлено BOT_TOKEN / CRYPTO_BOT_TOKEN / ADMIN_ID")
+if not BOT_TOKEN or not ADMIN_ID:
+    logging.error("Не встановлено BOT_TOKEN або ADMIN_ID")
     exit(1)
 
 # ===================== СТАН =====================
 DB_FILE = "db_state.json"
 USER_SUBSCRIPTIONS: dict[int, bool] = {}
 IS_ACTIVE = False
-COMBO_CONTENT = "Комбо ще не встановлено адміністратором."
-AUTO_SOURCE_URL = ""        # ← сюди ставиш прямий .txt URL (наприклад https://miningcombo.com/raw.txt)
+COMBO_CONTENT = "Комбо ще не встановлено.\nВикористай /seturl щоб налаштувати автооновлення."
+AUTO_SOURCE_URL = ""   # ← тут буде твій .txt URL
 
 # ===================== ПЕРСИСТЕНТНІСТЬ =====================
 def load_state():
@@ -41,7 +40,7 @@ def load_state():
                 AUTO_SOURCE_URL = data.get("url", "")
             logging.info("Стан завантажено")
         except Exception as e:
-            logging.error(f"Помилка завантаження стану: {e}")
+            logging.error(f"Помилка завантаження: {e}")
 
 def save_state():
     data = {
@@ -75,8 +74,8 @@ async def fetch_combo():
             if new and new != COMBO_CONTENT:
                 COMBO_CONTENT = new
                 save_state()
-                logging.info("Комбо автоматично оновлено")
-                await bot.send_message(ADMIN_ID, "Комбо оновлено автоматично!")
+                logging.info("Комбо оновлено автоматично")
+                await bot.send_message(ADMIN_ID, "Комбо автоматично оновлено!")
     except Exception as e:
         await bot.send_message(ADMIN_ID, f"Помилка автооновлення:\n{e}")
 
@@ -84,7 +83,7 @@ async def scheduler():
     await asyncio.sleep(20)
     while True:
         await fetch_combo()
-        await asyncio.sleep(24 * 60 * 60)   # кожні 24 години
+        await asyncio.sleep(24 * 3600)   # раз на добу
 
 # ===================== ХЕНДЛЕРИ =====================
 @dp.message(CommandStart())
@@ -95,7 +94,7 @@ async def start(msg: types.Message):
 
     text = f"Привіт, **{name}**!\n\n"
     if uid == ADMIN_ID:
-        text += f"Автооновлення: {'вкл' if AUTO_SOURCE_URL else 'викл'}\n"
+        text += f"Автооновлення: {'включено' if AUTO_SOURCE_URL else 'вимкнено'}\n\n"
 
     kb = [[types.InlineKeyboardButton(text="Отримати комбо", callback_data="combo")]]
     if uid == ADMIN_ID:
@@ -116,4 +115,57 @@ async def send_combo(cb: types.CallbackQuery):
         await cb.answer("Тільки для преміум-користувачів", show_alert=True)
 
 @dp.callback_query(F.data == "buy")
-async def buy(cb
+async def buy_premium(cb: types.CallbackQuery):
+    await cb.answer("Оплата 1 TON — функція підключається за 2 хвилини, якщо треба", show_alert=True)
+
+@dp.callback_query(F.data == "admin")
+async def admin_panel(cb: types.CallbackQuery):
+    if cb.from_user.id != ADMIN_ID:
+        return
+    kb = [
+        [types.InlineKeyboardButton(text="Оновити комбо зараз", callback_data="force")],
+        [types.InlineKeyboardButton(text="Активувати для всіх", callback_data="activate")],
+        [types.InlineKeyboardButton(text="Деактивувати для всіх", callback_data="deactivate")],
+    ]
+    await cb.message.edit_text("Адмін-панель", reply_markup=types.InlineKeyboardMarkup(inline_keyboard=kb))
+
+@dp.callback_query(F.data.in_({"force", "activate", "deactivate"}))
+async def admin_actions(cb: types.CallbackQuery):
+    if cb.from_user.id != ADMIN_ID:
+        return
+    if cb.data == "force":
+        await fetch_combo()
+        await cb.answer("Примусово оновлено")
+    elif cb.data == "activate":
+        global IS_ACTIVE
+        IS_ACTIVE = True
+        save_state()
+        await cb.answer("Активовано для всіх")
+    elif cb.data == "deactivate":
+        global IS_ACTIVE
+        IS_ACTIVE = False
+        save_state()
+        await cb.answer("Деактивовано для всіх")
+
+# адмін-команди
+@dp.message(Command("seturl"))
+async def set_url(msg: types.Message):
+    if msg.from_user.id != ADMIN_ID:
+        return
+    try:
+        url = msg.text.split(maxsplit=1)[1]
+        global AUTO_SOURCE_URL
+        AUTO_SOURCE_URL = url
+        save_state()
+        await msg.answer(f"URL встановлено:\n{url}\nПерше оновлення за хвилину")
+    except:
+        await msg.answer("Використання: /seturl https://example.com/combo.txt")
+
+# ===================== ЗАПУСК =====================
+async def main():
+    asyncio.create_task(scheduler())
+    logging.info("БОТ УСПІШНО ЗАПУЩЕНО — ГОТОВИЙ")
+    await dp.start_polling(bot)
+
+if __name__ == "__main__":
+    asyncio.run(main())
