@@ -43,20 +43,19 @@ API_HEADERS = {
 USER_SUBSCRIPTIONS: Dict[int, bool] = {} 
 IS_ACTIVE = False # Глобальний стан активації комбо
 
-# --- Утиліти для екранування (CRITICAL FIX - New Robust Logic) ---
+# --- Утиліти для екранування ---
 
 def escape_all_except_formatting(text: str) -> str:
     """
     Екранує ВСІ спеціальні символи Markdown V2, крім тих, 
     що використовуються для необхідного форматування (** та `). 
-    Це найагресивніший метод для уникнення TelegramBadRequest.
     """
     
     # СИМВОЛИ ДЛЯ ЕКРАНУВАННЯ (Згідно з правилами MarkdownV2)
     # _, *, [, ], (, ), ~, `, >, #, +, -, =, |, {, }, ., !
     
-    # 1. Екрануємо зворотний слеш сам по собі ПЕРШИМ, щоб не зламати екранування інших символів
-    text = text.replace('\\', r'\\\\') # ВИПРАВЛЕНО: Замінюємо '\' на '\\\\'
+    # 1. Екрануємо зворотний слеш сам по собі ПЕРШИМ
+    text = text.replace('\\', r'\\\\')
     
     # 2. Агресивне екранування всіх критичних символів
     # Примітка: * та ` не екрануємо, щоб зберегти жирний шрифт та inline-код.
@@ -75,7 +74,7 @@ def escape_all_except_formatting(text: str) -> str:
     text = text.replace('|', r'\|')
     text = text.replace('{', r'\{')
     text = text.replace('}', r'\}')
-    text = text.replace('.', r'\.') # CRITICAL: Екрануємо крапку
+    text = text.replace('.', r'\.')
     text = text.replace('!', r'\!')
     
     return text
@@ -95,10 +94,8 @@ def setup_bot():
 def _build_start_message_content(user_name: str, user_id: int, is_admin: bool):
     """Створює текст та клавіатуру для початкового повідомлення /start."""
     
-    # Адмін завжди має доступ до Premium-функцій, тому прирівнюємо його Premium-статус до True
     is_premium = USER_SUBSCRIPTIONS.get(user_id, False) or is_admin
 
-    # Екрануємо ВСЕ ім'я користувача.
     escaped_user_name = escape_all_except_formatting(user_name)
     
     combo_status = r'**АКТИВНО**' if IS_ACTIVE else r'**НЕАКТИВНО**'
@@ -115,35 +112,34 @@ def _build_start_message_content(user_name: str, user_id: int, is_admin: bool):
     if is_admin:
         status_text_parts.append(f"Глобальна Активність: {combo_status}")
 
-    # Застосовуємо escape_all_except_formatting до змінної частини тексту
     status_text_raw = "\n".join(status_text_parts) + "\n\n"
     status_text = escape_all_except_formatting(status_text_raw)
     
-    # Заголовок та основний текст
-    welcome_message_raw = f"👋 Привіт, **{escaped_user_name}**!\n\n" \
-                          f"{status_text}" \
-                          r"Цей бот надає ранній доступ до щоденних комбо та кодів для популярних криптоігор\.\n\n" \
-                          r"**Ціна Premium:** 1 TON (або еквівалент)\."
+    # ВИПРАВЛЕНО: Використовуємо сирий рядок r"""...""" для уникнення SyntaxWarning
+    welcome_message_raw = r"""
+👋 Привіт, **{escaped_user_name}**!
+
+{status_text}
+Цей бот надає ранній доступ до щоденних комбо та кодів для популярних криптоігор\.
+
+**Ціна Premium:** 1 TON (або еквівалент)\.
+""".format(escaped_user_name=escaped_user_name, status_text=status_text)
     
     # Створюємо клавіатуру
     if is_admin:
-        # Адмін завжди бачить кнопку комбо та адмін-меню
         keyboard = types.InlineKeyboardMarkup(inline_keyboard=[
             [types.InlineKeyboardButton(text="Отримати комбо зараз ➡️", callback_data="show_combo")],
             [types.InlineKeyboardButton(text="Управління активацією ⚙️", callback_data="admin_menu")]
         ])
     elif not is_premium:
-        # Звичайний користувач без підписки
         keyboard = types.InlineKeyboardMarkup(inline_keyboard=[
             [types.InlineKeyboardButton(text="Отримати Premium 🔑", callback_data="get_premium")],
         ])
     else:
-        # Звичайний користувач з Premium
         keyboard = types.InlineKeyboardMarkup(inline_keyboard=[
             [types.InlineKeyboardButton(text="Отримати комбо зараз ➡️", callback_data="show_combo")],
         ])
         
-    # Кінцеве екранування всього тексту
     final_message = escape_all_except_formatting(welcome_message_raw)
     
     return final_message, keyboard
@@ -167,14 +163,15 @@ def _build_admin_menu_content():
         [types.InlineKeyboardButton(text="⬅️ Назад до /start", callback_data="back_to_start")]
     ])
     
-    # Застосовуємо escape_all_except_formatting до статичного тексту.
-    base_text_raw = (
-        f"⚙️ **Панель адміністратора**\n\n"
-        f"Поточний стан відображення комбо для всіх користувачів (Global Combo): {status_text}\n\n"
-        "Натисніть кнопку, щоб змінити стан\."
-    )
+    # ВИПРАВЛЕНО: Використовуємо сирий рядок r"""...""" для уникнення SyntaxWarning
+    base_text_raw = r"""
+⚙️ **Панель адміністратора**
+
+Поточний стан відображення комбо для всіх користувачів (Global Combo): {status_text}
+
+Натисніть кнопку, щоб змінити стан\.
+""".format(status_text=status_text)
     
-    # Кінцеве екранування
     text = escape_all_except_formatting(base_text_raw)
     
     return text, keyboard
@@ -186,15 +183,15 @@ async def command_start_handler(message: types.Message) -> None:
     is_admin = user_id == ADMIN_ID
     
     welcome_message, keyboard = _build_start_message_content(
-        message.from_user.first_name or "Користувач", # Додаємо fallback
+        message.from_user.first_name or "Користувач", 
         user_id, 
         is_admin
     )
     
     await message.answer(welcome_message, reply_markup=keyboard)
 
-# Хендлер команди /combo
-async def command_combo_handler(message: types.Message) -> None:
+# Хендлер команди /combo (ТЕПЕР ПРИЙМАЄ bot)
+async def command_combo_handler(message: types.Message, bot: Bot) -> None:
     """Обробляє команду /combo."""
     user_id = message.from_user.id
     is_admin = user_id == ADMIN_ID
@@ -202,10 +199,9 @@ async def command_combo_handler(message: types.Message) -> None:
     
     # КЛЮЧОВА ЛОГІКА ДОСТУПУ: Адмін АБО Глобальна Активація АБО Індивідуальна Преміум-підписка
     if is_admin or IS_ACTIVE or is_premium:
-        # Комбо, яке бачать преміум-користувачі та адмін
-        # ЗВЕРНІТЬ УВАГУ: Всі символи, які не є * чи `, мають бути екрановані
-        combo_text_raw = f"""
-📅 **Комбо та коди на {datetime.now().strftime('%d\.%m\.%Y')}**
+        # ВИПРАВЛЕНО: Використовуємо сирий рядок r"""...""" для уникнення SyntaxWarning
+        combo_text_raw = r"""
+📅 **Комбо та коди на {date_str}**
 *(Ранній доступ Premium)*
         
 *Hamster Kombat* \u2192 Pizza \u2192 Wallet \u2192 Rocket
@@ -231,18 +227,21 @@ async def command_combo_handler(message: types.Message) -> None:
 *SQUID* \u2192 FISH
         
 **\+ ще 5-7 рідкісних комбо\.\.\.**
-        """
+        """.format(date_str=datetime.now().strftime(r'%d\.%m\.%Y'))
         
-        # Застосування агресивного екранування до всього тексту
         final_combo_text = escape_all_except_formatting(combo_text_raw)
         
         try:
-            await message.answer(final_combo_text)
+            # ВИПРАВЛЕНО: Використовуємо bot.send_message
+            await bot.send_message(chat_id=message.chat.id, text=final_combo_text)
         except TelegramBadRequest as e:
             logging.error(f"Помилка TelegramBadRequest при відправці комбо: {e}")
-            # Надсилаємо повідомлення про помилку у звичайному тексті, щоб користувач її побачив
-            await message.answer(
-                "❌ **Помилка відображення комбо**\. Виникла проблема з форматуванням Telegram\. Спробуйте пізніше або зверніться до адміністратора\."
+            
+            # ВИПРАВЛЕНО: Використовуємо bot.send_message
+            error_message_raw = r"❌ **Помилка відображення комбо**\. Виникла проблема з форматуванням Telegram\. Спробуйте пізніше або зверніться до адміністратора\."
+            await bot.send_message(
+                chat_id=message.chat.id, 
+                text=escape_all_except_formatting(error_message_raw)
             )
     else:
         # Повідомлення для непідписаних користувачів
@@ -250,9 +249,16 @@ async def command_combo_handler(message: types.Message) -> None:
             [types.InlineKeyboardButton(text="Отримати Premium 🔑", callback_data="get_premium")],
         ])
         
-        premium_message_raw = r"🔒 **Увага\!** Щоб отримати актуальні комбо та коди, вам потрібна Premium\-підписка\.\n\nНатисніть кнопку нижче, щоб оформити ранній доступ\." 
+        # ВИПРАВЛЕНО: Використовуємо сирий рядок r"""...""" для уникнення SyntaxWarning
+        premium_message_raw = r"""
+🔒 **Увага\!** Щоб отримати актуальні комбо та коди, вам потрібна Premium\-підписка\.
+
+Натисніть кнопку нижче, щоб оформити ранній доступ\.
+""" 
         premium_message = escape_all_except_formatting(premium_message_raw)
         
+        # ВИПРАВЛЕНО: message.answer() може використовуватись, оскільки це обробник команди Message, 
+        # і message вже прив'язаний до bot.
         await message.answer(
             premium_message,
             reply_markup=keyboard
@@ -321,7 +327,6 @@ async def inline_callback_handler(callback: types.CallbackQuery, bot: Bot):
         await callback.answer("Переадресація на оплату...", show_alert=False)
         
         try:
-            # Отримуємо ім'я бота динамічно
             bot_info = await bot.get_me()
             bot_username = bot_info.username
             
@@ -331,17 +336,22 @@ async def inline_callback_handler(callback: types.CallbackQuery, bot: Bot):
                 pay_url = invoice_data['result']['pay_url']
                 invoice_id = invoice_data['result']['invoice_id']
                 
-                # Кнопки для оплати
                 keyboard = types.InlineKeyboardMarkup(inline_keyboard=[
                     [types.InlineKeyboardButton(text="Сплатити (Crypto Bot) 💳", url=pay_url)],
                     [types.InlineKeyboardButton(text="Я сплатив 💸 (Перевірити)", callback_data=f"check_payment_{invoice_id}")]
                 ])
                 
-                payment_message_raw = r"💰 **Оплата Premium**\n\nДля отримання раннього доступу сплатіть 1 TON (або еквівалент)\.\nНатисніть кнопку 'Сплатити' і після оплати — 'Я сплатив 💸'\."
+                # ВИПРАВЛЕНО: Використовуємо сирий рядок r"""...""" для уникнення SyntaxWarning
+                payment_message_raw = r"""
+💰 **Оплата Premium**
+
+Для отримання раннього доступу сплатіть 1 TON (або еквівалент)\.
+Натисніть кнопку 'Сплатити' і після оплати — 'Я сплатив 💸'\.
+"""
                 payment_message = escape_all_except_formatting(payment_message_raw)
                 
                 await callback.message.edit_text(
-                    payment_message, # ВИПРАВЛЕНО: Використовуємо edit_text, якщо це відповідь на іншу кнопку
+                    payment_message, 
                     reply_markup=keyboard,
                     parse_mode=ParseMode.MARKDOWN_V2
                 )
@@ -354,15 +364,15 @@ async def inline_callback_handler(callback: types.CallbackQuery, bot: Bot):
             
     elif callback.data == "show_combo":
         # Перенаправлення на обробник /combo
-        # Виклик command_combo_handler з об'єктом message, який містить user_id
         await callback.answer("Отримуємо комбо...")
-        # Створюємо імітацію об'єкта Message для command_combo_handler
+        # Створюємо імітацію об'єкта Message
         mock_message = types.Message(message_id=callback.message.message_id, 
                                      chat=callback.message.chat, 
                                      from_user=callback.from_user, 
                                      date=datetime.now())
                                      
-        await command_combo_handler(mock_message)
+        # ВИПРАВЛЕНО: ТЕПЕР ПЕРЕДАЄМО bot ЯВНО, щоб message.answer() працювало через bot.send_message
+        await command_combo_handler(mock_message, bot)
 
 
 # Обробка кнопки "Я сплатив"
@@ -379,12 +389,13 @@ async def check_payment_handler(callback: types.CallbackQuery):
             status = payment_info['result']['status']
             
             if status == 'paid':
-                # Успішна оплата - АКТИВУЄМО ПІДПИСКУ В ПАМ'ЯТІ
                 USER_SUBSCRIPTIONS[user_id] = True 
                 
-                # Повідомлення про успіх
-                success_message_raw = r"🎉 **Оплата успішна\!** Ви отримали Premium\-доступ\.\n" \
-                                      r"Надішліть `\/combo` або натисніть кнопку 'Отримати комбо зараз' для актуальних кодів\."
+                # ВИПРАВЛЕНО: Використовуємо сирий рядок r"""...""" для уникнення SyntaxWarning
+                success_message_raw = r"""
+🎉 **Оплата успішна\!** Ви отримали Premium\-доступ\.
+Надішліть `\/combo` або натисніть кнопку 'Отримати комбо зараз' для актуальних кодів\.
+"""
                 success_message = escape_all_except_formatting(success_message_raw)
                 
                 await callback.message.edit_text(
@@ -402,7 +413,7 @@ async def check_payment_handler(callback: types.CallbackQuery):
                 return
             
             elif status == 'expired':
-                # Повідомлення про закінчення терміну дії
+                # ВИПРАВЛЕНО: Використовуємо сирий рядок r"""...""" для уникнення SyntaxWarning
                 expired_message_raw = r"❌ **Термін дії інвойсу сплив\.** Будь ласка, створіть новий інвойс для оплати\."
                 expired_message = escape_all_except_formatting(expired_message_raw)
                 
@@ -429,6 +440,7 @@ async def check_payment_handler(callback: types.CallbackQuery):
 
 # --- HTTP запити до Crypto Bot API ---
 
+# (create_invoice_request та check_invoice_status залишаються без змін)
 async def create_invoice_request(user_id: int, bot_username: str) -> dict[str, Any]:
     """Створює інвойс на 1 TON через Crypto Bot API."""
     url = f"{CRYPTO_BOT_API_URL}/createInvoice"
@@ -506,6 +518,7 @@ async def main() -> None:
     
     # 1. Команди (Message Handlers)
     dp.message.register(command_start_handler, CommandStart())
+    # ВИПРАВЛЕНО: Реєструємо команду /combo з обов'язковим передаванням бота
     dp.message.register(command_combo_handler, Command("combo"))
     
     # Реєстрація адмін-меню тільки для ADMIN_ID
@@ -531,7 +544,6 @@ async def main() -> None:
 
 if __name__ == "__main__":
     try:
-        # Для коректної роботи в aiogram 3.x, main має бути асинхронною функцією
         asyncio.run(main()) 
     except KeyboardInterrupt:
         logging.info("Бот зупинено вручну.")
