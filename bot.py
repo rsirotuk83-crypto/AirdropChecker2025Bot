@@ -39,23 +39,45 @@ def fetch_combo_cards(url: str, attempt: int) -> list or None:
         # Парсинг HTML за допомогою BeautifulSoup
         soup = BeautifulSoup(response.content, 'html.parser')
 
-        # --- ЛОГІКА ПАРСИНГУ ---
-        # Цей селектор є ГІПОТЕТИЧНИМ. Вам потрібно буде замінити його
-        # на реальний CSS-селектор, який містить список карток на цільовому сайті.
-        combo_container = soup.find('div', class_='daily-combo-list')
+        # --- НОВА, БІЛЬШ СТІЙКА ЛОГІКА ПАРСИНГУ ---
         
-        if combo_container:
-            # Припускаємо, що картки знаходяться у тегах <li>
-            cards = [li.get_text(strip=True) for li in combo_container.find_all('li')]
-            
-            if len(cards) == 3:
-                logging.info(f"Успішно знайдено комбо: {cards}")
-                return cards
-            else:
-                logging.warning(f"Знайдено контейнер, але кількість карток не дорівнює 3. Знайдено: {len(cards)}")
-                return None
+        # 1. Спробуємо знайти заголовок або контейнер, який містить ключові слова.
+        # Шукаємо заголовок, що містить "Daily Combo Cards" або "Комбо"
+        combo_header = soup.find(lambda tag: tag.name in ['h2', 'h3', 'p'] and 'combo' in tag.get_text().lower())
+        
+        cards = []
+        if combo_header:
+            # 2. Якщо заголовок знайдено, шукаємо найближчий список (ul/ol) або набір параграфів (p)
+            # у наступних 5 елементах, де можуть бути картки.
+            current_element = combo_header.find_next_sibling()
+            count = 0
+            while current_element and count < 5:
+                # Шукаємо список (ul) і збираємо елементи <li>
+                if current_element.name == 'ul' or current_element.name == 'ol':
+                    cards = [li.get_text(strip=True) for li in current_element.find_all('li')]
+                    break
+                
+                # Також шукаємо окремі параграфи або div'и, якщо вони містять назви карток
+                elif current_element.name in ['p', 'div'] and current_element.get_text(strip=True):
+                    # Якщо в одному елементі є декілька рядків, розділених переносом
+                    raw_text = current_element.get_text('\n', strip=True)
+                    lines = [line.strip() for line in raw_text.split('\n') if line.strip()]
+                    
+                    if len(lines) >= 3 and not cards: # Використовуємо, якщо не знайшли список
+                        cards = lines
+                        break
+
+                current_element = current_element.find_next_sibling()
+                count += 1
+        
+        # 3. Валідація результату
+        if len(cards) >= 3:
+            # Обмежуємо до перших трьох карток
+            final_cards = cards[:3]
+            logging.info(f"Успішно знайдено комбо: {final_cards}")
+            return final_cards
         else:
-            logging.warning("Не вдалося знайти контейнер 'daily-combo-list'. Можливо, структура сайту змінилася.")
+            logging.warning(f"Не вдалося знайти 3 або більше карток комбо. Знайдено: {len(cards)}. Можливо, структура сайту знову змінилася.")
             return None
 
     except requests.exceptions.HTTPError as e:
