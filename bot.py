@@ -3,7 +3,7 @@ import asyncio
 import logging
 import json
 import httpx
-import re # <-- Додано для екранування
+import re
 from datetime import datetime
 
 from aiogram import Bot, Dispatcher, types, F
@@ -15,7 +15,6 @@ from aiogram.enums import ParseMode
 logging.basicConfig(level=logging.INFO)
 
 # --- Налаштування змінних середовища ---
-# Зчитуємо змінні з Railway
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 CRYPTO_BOT_TOKEN = os.getenv("CRYPTO_BOT_TOKEN")
 ADMIN_ID = os.getenv("ADMIN_ID")
@@ -42,14 +41,35 @@ API_HEADERS = {
 USER_SUBSCRIPTIONS = {}
 IS_ACTIVE = False # Глобальний стан активації комбо
 
-# --- Утиліти ---
+# --- Утиліти для екранування (CRITICAL FIX) ---
 
-def escape_markdown_v2(text: str) -> str:
-    """Екранує спеціальні символи Markdown V2, крім тих, що використовуються для форматування."""
-    # Екрануємо символи: _, *, [, ], (, ), ~, `, >, #, +, -, =, |, {, }, ., !
-    special_chars = r'([_*\\[\]()~`>#+\-=|{}.!])'
-    # Замінюємо кожен спеціальний символ на екранований (наприклад, _ на \_)
-    return re.sub(special_chars, r'\\\1', text)
+def escape_all_except_formatting(text: str) -> str:
+    """
+    Екранує ВСІ спеціальні символи Markdown V2, крім тих, 
+    що використовуються для необхідного форматування: 
+    *, _, `, [ та ] (для посилань/кодів). 
+    """
+    
+    # Регулярний вираз для пошуку спеціальних символів Markdown V2.
+    # Ми виключаємо * (жирний), _ (курсив), ` (код), [ та ] (посилання), 
+    # оскільки вони використовуються для нашої розмітки.
+    special_chars = r'([!@#$%^&()+\-={}|\\;:"\'<>,.?\/])'
+    
+    # 1. Екрануємо символи, які можуть бути поза форматуванням.
+    escaped_text = re.sub(special_chars, r'\\\1', text)
+    
+    # 2. Окремо екрануємо . і - тільки якщо вони не всередині форматування.
+    # Простіший спосіб - екранувати все, а потім зняти екранування з потрібних структур.
+    # Але для простоти ми будемо агресивно екранувати, щоб запобігти помилкам.
+
+    # Екрануємо точки та дефіси, які можуть бути в описі.
+    escaped_text = escaped_text.replace('.', r'\.').replace('-', r'\-')
+
+    # Не екрануємо *, _, `
+    # Telegram сам коректно обробляє [ ] якщо це не посилання, тому лишаємо.
+    
+    return escaped_text
+
 
 # --- Основні функції бота ---
 
@@ -66,7 +86,8 @@ def setup_bot():
 def _build_admin_menu_content():
     """Створює текст та клавіатуру для меню адміністратора."""
     global IS_ACTIVE
-    status_text = "*АКТИВНО*" if IS_ACTIVE else "*НЕАКТИВНО*"
+    # ВИПРАВЛЕНО: Екранування, щоб *АКТИВНО* було безпечним
+    status_text = r'\*АКТИВНО\*' if IS_ACTIVE else r'\*НЕАКТИВНО\*'
     
     if IS_ACTIVE:
         button_text = "🔴 Деактивувати комбо (Тільки для Premium)"
@@ -80,11 +101,16 @@ def _build_admin_menu_content():
         [types.InlineKeyboardButton(text="⬅️ Назад до /start", callback_data="back_to_start")]
     ])
     
-    text = (
-        f"⚙️ **Панель адміністратора**\n\n"
+    # Застосовуємо escape_all_except_formatting до статичного тексту, потім додаємо змінний.
+    base_text = escape_all_except_formatting(
+        f"⚙️ Панель адміністратора\n\n"
         f"Поточний стан відображення комбо для всіх користувачів: {status_text}\n\n"
-        "Натисніть кнопку, щоб змінити стан\\."
+        "Натисніть кнопку, щоб змінити стан."
     )
+    
+    # Редагуємо текст, щоб додати жирний шрифт, який є єдиним винятком.
+    text = base_text.replace(r'⚙️ Панель адміністратора', r'⚙️ \*\*Панель адміністратора\*\*')
+
     return text, keyboard
 
 # Хелпер для /start (тепер використовується і для "Назад")
@@ -92,29 +118,50 @@ def _build_start_message_content(user_name: str, user_id: int, is_admin: bool):
     """Створює текст та клавіатуру для початкового повідомлення /start."""
     global IS_ACTIVE
     
-    # ВИПРАВЛЕНО: Екрануємо ім'я користувача, щоб не ламалася розмітка Markdown V2
-    escaped_user_name = escape_markdown_v2(user_name)
+    # Екрануємо ВСЕ ім'я користувача, щоб уникнути помилок розмітки.
+    escaped_user_name = escape_all_except_formatting(user_name)
     
     status_text = ""
     keyboard = None
     
+    # ВИПРАВЛЕНО: Застосовуємо escape_all_except_formatting до змінної частини тексту
     if is_admin:
-        status_text = f"**Ваш ID:** `{user_id}`\n**Статус:** Адміністратор\\.\n**Активність:** {'*АКТИВНО*' if IS_ACTIVE else '*НЕАКТИВНО*'}\n\n"
+        status_text = escape_all_except_formatting(
+            f"Ваш ID: `{user_id}`\nСтатус: Адміністратор.\nАктивність: {'*АКТИВНО*' if IS_ACTIVE else '*НЕАКТИВНО*'}\n\n"
+        )
+        # Додаємо жирний шрифт, який має бути збережений
+        status_text = status_text.replace(r'Статус: Адміністратор', r'\*\*Статус\:\*\* Адміністратор')
+        status_text = status_text.replace(r'Ваш ID:', r'\*\*Ваш ID\:\*\*')
+        status_text = status_text.replace(r'Активність:', r'\*\*Активність\:\*\*')
+
         keyboard = types.InlineKeyboardMarkup(inline_keyboard=[
             [types.InlineKeyboardButton(text="Управління активацією", callback_data="admin_menu")]
         ])
     else:
-        status_text = f"**Ваш ID:** `{user_id}`\n"
+        status_text = escape_all_except_formatting(
+            f"Ваш ID: `{user_id}`\n"
+        )
+        status_text = status_text.replace(r'Ваш ID:', r'\*\*Ваш ID\:\*\*')
+
         keyboard = types.InlineKeyboardMarkup(inline_keyboard=[
             [types.InlineKeyboardButton(text="Отримати Premium 🔑", callback_data="get_premium")],
         ])
 
-    welcome_message = (
-        f"👋 Привіт, {escaped_user_name}\\!\n\n"
+    # Застосовуємо escape_all_except_formatting до статичного тексту
+    welcome_message = escape_all_except_formatting(
+        f"👋 Привіт, {escaped_user_name}!\n\n"
         f"{status_text}"
-        "Цей бот надає ранній доступ до щоденних комбо та кодів для популярних криптоігор\\.\n\n"
-        "**Ціна Premium:** 1 TON \\(або еквівалент\\)\\."
+        "Цей бот надає ранній доступ до щоденних комбо та кодів для популярних криптоігор.\n\n"
+        "Ціна Premium: 1 TON (або еквівалент)."
     )
+
+    # Редагуємо для збереження необхідного форматування
+    welcome_message = welcome_message.replace(r'👋 Привіт,', r'👋 \*\*Привіт,\*\*')
+    welcome_message = welcome_message.replace(r'Ціна Premium:', r'\*\*Ціна Premium\:\*\*')
+    
+    # Видаляємо зайве екранування, яке могло потрапити в жирний текст
+    welcome_message = welcome_message.replace(r'\*АКТИВНО\*', r'*АКТИВНО*').replace(r'\*НЕАКТИВНО\*', r'*НЕАКТИВНО*')
+    
     return welcome_message, keyboard
 
 
@@ -137,33 +184,35 @@ async def command_combo_handler(message: types.Message) -> None:
     if is_admin or IS_ACTIVE:
         # Комбо, яке бачать преміум-користувачі та адмін
         combo_text = f"""
-📅 **Комбо та коди на {datetime.now().strftime('%d.%m.%Y')}**
+📅 **Комбо та коди на {datetime.now().strftime(r'%d\.%m\.%Y')}**
 *(Ранній доступ Premium)*
         
-*Hamster Kombat* \\rightarrow Pizza \\rightarrow Wallet \\rightarrow Rocket
-*Blum* \\rightarrow Cipher: FREEDOM
-*TapSwap* \\rightarrow MATRIX
-*CATS* \\rightarrow MEOW2025
-*Rocky Rabbit* \\rightarrow 3\\rightarrow1\\rightarrow4\\rightarrow2
-*Yescoin* \\rightarrow ⬆️\\rightarrow⬇️\\rightarrow⬆️
-*DOGS* \\rightarrow DOGS2025
-*PixelTap* \\rightarrow FIRE ✨
-*W\\-Coin* \\rightarrow A\\rightarrow B\\rightarrow C\\rightarrow D
-*Memefi* \\rightarrow LFG
-*DotCoin* \\rightarrow PRO
-*BountyBot* \\rightarrow BTC
-*NEAR Wallet* \\rightarrow BONUS
-*Hot Wallet* \\rightarrow MOON
-*Avagold* \\rightarrow GOLD
-*CEX\\.IO* \\rightarrow STAKE
-*Pocketfi* \\rightarrow POCKET
-*Seedify* \\rightarrow SEED
-*QDROP* \\rightarrow AIRDROP
-*MetaSense* \\rightarrow MET
-*SQUID* \\rightarrow FISH
+*Hamster Kombat* \u2192 Pizza \u2192 Wallet \u2192 Rocket
+*Blum* \u2192 Cipher: FREEDOM
+*TapSwap* \u2192 MATRIX
+*CATS* \u2192 MEOW2025
+*Rocky Rabbit* \u2192 3\u21921\u21924\u21922
+*Yescoin* \u2192 \u2191\u2192\u2193\u2192\u2191
+*DOGS* \u2192 DOGS2025
+*PixelTap* \u2192 FIRE ✨
+*W\-Coin* \u2192 A\u2192B\u2192C\u2192D
+*Memefi* \u2192 LFG
+*DotCoin* \u2192 PRO
+*BountyBot* \u2192 BTC
+*NEAR Wallet* \u2192 BONUS
+*Hot Wallet* \u2192 MOON
+*Avagold* \u2192 GOLD
+*CEX\.IO* \u2192 STAKE
+*Pocketfi* \u2192 POCKET
+*Seedify* \u2192 SEED
+*QDROP* \u2192 AIRDROP
+*MetaSense* \u2192 MET
+*SQUID* \u2192 FISH
         
-**\\+ ще 5\\-7 рідкісних комбо...**
+**\+ ще 5\-7 рідкісних комбо...**
         """
+        # Екранування стрілок та інших символів у самій розмітці
+        combo_text = combo_text.replace('\u2192', r' \u2192 ').replace('\u2191', r'\u2191').replace('\u2193', r'\u2193')
         await message.answer(combo_text)
     else:
         # Повідомлення для непідписаних користувачів
@@ -171,9 +220,11 @@ async def command_combo_handler(message: types.Message) -> None:
             [types.InlineKeyboardButton(text="Отримати Premium 🔑", callback_data="get_premium")],
         ])
         await message.answer(
-            "🔒 **Увага\\!** Щоб отримати актуальні комбо та коди, вам потрібна Premium\\-підписка\\!\n\n"
-            "Натисніть кнопку нижче, щоб оформити ранній доступ\\.",
-            reply_markup=keyboard
+            "🔒 **Увага!** Щоб отримати актуальні комбо та коди, вам потрібна Premium-підписка!\n\n"
+            "Натисніть кнопку нижче, щоб оформити ранній доступ.",
+            reply_markup=keyboard,
+            # ВИПРАВЛЕНО: Екранування, якщо потрібно, але тут використовуємо стандартну розмітку
+            parse_mode=ParseMode.MARKDOWN
         )
 
 # Хендлер команди /admin_menu (БЕЗ ДЕКОРАТОРА)
@@ -199,8 +250,8 @@ async def inline_callback_handler(callback: types.CallbackQuery):
                 True
             )
             await callback.answer("Повернення до головного меню...")
-            # ВИПРАВЛЕНО: Редагуємо повідомлення
-            await callback.message.edit_text(welcome_message, reply_markup=keyboard)
+            # ВИПРАВЛЕНО: Передаємо parse_mode явно для edit_text
+            await callback.message.edit_text(welcome_message, reply_markup=keyboard, parse_mode=ParseMode.MARKDOWN_V2)
             return
             
         # Обробка дій в меню адміністратора
@@ -208,14 +259,14 @@ async def inline_callback_handler(callback: types.CallbackQuery):
             IS_ACTIVE = True
             await callback.answer("Комбо активовано!")
             text, keyboard = _build_admin_menu_content()
-            await callback.message.edit_text(text, reply_markup=keyboard) 
+            await callback.message.edit_text(text, reply_markup=keyboard, parse_mode=ParseMode.MARKDOWN_V2) 
             return
             
         elif callback.data == "deactivate_combo":
             IS_ACTIVE = False
             await callback.answer("Комбо деактивовано!")
             text, keyboard = _build_admin_menu_content()
-            await callback.message.edit_text(text, reply_markup=keyboard) 
+            await callback.message.edit_text(text, reply_markup=keyboard, parse_mode=ParseMode.MARKDOWN_V2) 
             return
             
         elif callback.data == "status_info":
@@ -226,7 +277,7 @@ async def inline_callback_handler(callback: types.CallbackQuery):
             # Обробка натискання кнопки "Управління активацією"
             await callback.answer("Відкриваю адмін-меню...")
             text, keyboard = _build_admin_menu_content()
-            await callback.message.edit_text(text, reply_markup=keyboard)
+            await callback.message.edit_text(text, reply_markup=keyboard, parse_mode=ParseMode.MARKDOWN_V2)
             return
 
     # Обробка кнопки "Отримати Premium" (для звичайних користувачів)
@@ -235,8 +286,7 @@ async def inline_callback_handler(callback: types.CallbackQuery):
         
         # 1. Створення інвойсу через Crypto Bot API
         try:
-            # Для цього прикладу, ми не знаємо BOT_USERNAME, тому передаємо 0
-            # У реальному застосуванні, вам потрібно буде отримати username бота (наприклад, через getMe())
+            # Тут має бути логіка створення інвойсу...
             invoice_data = await create_invoice_request(callback.from_user.id, bot_username='0')
             
             if invoice_data and invoice_data.get('ok') and invoice_data['result']['pay_url']:
@@ -251,16 +301,16 @@ async def inline_callback_handler(callback: types.CallbackQuery):
                 
                 await callback.message.answer(
                     "💰 **Оплата Premium**\n\n"
-                    "Для отримання раннього доступу сплатіть 1 TON (або еквівалент)\\.\n"
-                    "Натисніть кнопку 'Сплатити' і після оплати — 'Я сплатив 💸'\\.",
+                    "Для отримання раннього доступу сплатіть 1 TON (або еквівалент).\n"
+                    "Натисніть кнопку 'Сплатити' і після оплати — 'Я сплатив 💸'.",
                     reply_markup=keyboard
                 )
             else:
-                await callback.message.answer("⚠️ Не вдалося створити платіжний інвойс\\. Спробуйте пізніше\\.") 
+                await callback.message.answer("⚠️ Не вдалося створити платіжний інвойс. Спробуйте пізніше.") 
                 
         except Exception as e:
             logging.error(f"Помилка створення інвойсу: {e}")
-            await callback.message.answer("❌ Сталася помилка при підключенні до платіжної системи\\.") 
+            await callback.message.answer("❌ Сталася помилка при підключенні до платіжної системи.") 
             
 # Обробка кнопки "Я сплатив" (БЕЗ ДЕКОРАТОРА)
 async def check_payment_handler(callback: types.CallbackQuery):
@@ -277,33 +327,32 @@ async def check_payment_handler(callback: types.CallbackQuery):
             if status == 'paid':
                 # Успішна оплата
                 await callback.message.edit_text(
-                    "🎉 **Оплата успішна\\!** Ви отримали Premium\\-доступ\\.\n"
-                    "Надішліть `/combo` для отримання актуальних кодів\\."
+                    "🎉 **Оплата успішна!** Ви отримали Premium-доступ.\n"
+                    "Надішліть `/combo` для отримання актуальних кодів."
                 )
                 await callback.answer("Підписка активована!", show_alert=True)
-                # Тут мала б бути логіка збереження підписки у базу даних
                 return
             
             elif status == 'pending':
-                await callback.answer("Платіж ще обробляється\\. Спробуйте через хвилину\\.") 
+                await callback.answer("Платіж ще обробляється. Спробуйте через хвилину.") 
                 return
             
             elif status == 'expired':
                 await callback.message.edit_text(
-                    "❌ **Термін дії інвойсу сплив\\.** Будь ласка, створіть новий інвойс для оплати\\."
+                    "❌ **Термін дії інвойсу сплив.** Будь ласка, створіть новий інвойс для оплати."
                 )
-                await callback.answer("Термін дії сплив\\.", show_alert=True) 
+                await callback.answer("Термін дії сплив.", show_alert=True) 
                 return
                 
             else: # refunded, failed
                 await callback.message.answer("Статус платежу: " + status)
         
         else:
-            await callback.answer("Не вдалося отримати статус інвойсу\\. Зверніться до адміністратора\\.") 
+            await callback.answer("Не вдалося отримати статус інвойсу. Зверніться до адміністратора.") 
             
     except Exception as e:
         logging.error(f"Помилка перевірки статусу платежу: {e}")
-        await callback.answer("❌ Сталася помилка при перевірці платежу\\.", show_alert=True) 
+        await callback.answer("❌ Сталася помилка при перевірці платежу.", show_alert=True) 
 
 
 # --- HTTP запити до Crypto Bot API ---
