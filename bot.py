@@ -93,8 +93,8 @@ def setup_bot():
 def _build_start_message_content(user_name: str, user_id: int, is_admin: bool):
     """Створює текст та клавіатуру для початкового повідомлення /start."""
     
-    # Перевірка індивідуальної підписки
-    is_premium = USER_SUBSCRIPTIONS.get(user_id, False)
+    # Адмін завжди має доступ до Premium-функцій, тому прирівнюємо його Premium-статус до True
+    is_premium = USER_SUBSCRIPTIONS.get(user_id, False) or is_admin
 
     # Екрануємо ВСЕ ім'я користувача.
     escaped_user_name = escape_all_except_formatting(user_name)
@@ -126,26 +126,24 @@ def _build_start_message_content(user_name: str, user_id: int, is_admin: bool):
     
     # Створюємо клавіатуру
     if is_admin:
+        # Адмін завжди бачить кнопку комбо та адмін-меню
         keyboard = types.InlineKeyboardMarkup(inline_keyboard=[
+            [types.InlineKeyboardButton(text="Отримати комбо зараз ➡️", callback_data="show_combo")],
             [types.InlineKeyboardButton(text="Управління активацією ⚙️", callback_data="admin_menu")]
         ])
     elif not is_premium:
+        # Звичайний користувач без підписки
         keyboard = types.InlineKeyboardMarkup(inline_keyboard=[
             [types.InlineKeyboardButton(text="Отримати Premium 🔑", callback_data="get_premium")],
         ])
     else:
-        # Для користувачів з Premium, але не адмінів
+        # Звичайний користувач з Premium
         keyboard = types.InlineKeyboardMarkup(inline_keyboard=[
             [types.InlineKeyboardButton(text="Отримати комбо зараз ➡️", callback_data="show_combo")],
         ])
         
-    # Кінцеве екранування всього тексту (Тут ми екрануємо фінальний текст, але `**` залишається завдяки escape_all_except_formatting)
+    # Кінцеве екранування всього тексту
     final_message = escape_all_except_formatting(welcome_message_raw)
-    
-    # Оскільки ми вже агресивно екранували текст, нам потрібно лише 
-    # **переконатися, що жирний шрифт та код не пошкоджені**.
-    # Ручне відновлення **видалено**, оскільки воно не було потрібне
-    # і могло спричиняти помилки.
     
     return final_message, keyboard
 
@@ -178,8 +176,6 @@ def _build_admin_menu_content():
     # Кінцеве екранування
     text = escape_all_except_formatting(base_text_raw)
     
-    # Ручне відновлення **видалено**.
-
     return text, keyboard
 
 # Хендлер команди /start
@@ -203,11 +199,9 @@ async def command_combo_handler(message: types.Message) -> None:
     is_admin = user_id == ADMIN_ID
     is_premium = USER_SUBSCRIPTIONS.get(user_id, False)
     
-    # Умова доступу: Адмін АБО Глобальна Активація АБО Індивідуальна Преміум-підписка
+    # КЛЮЧОВА ЛОГІКА ДОСТУПУ: Адмін АБО Глобальна Активація АБО Індивідуальна Преміум-підписка
     if is_admin or IS_ACTIVE or is_premium:
         # Комбо, яке бачать преміум-користувачі та адмін
-        # ВИПРАВЛЕНО: Видалено ручне екранування (\) для символів '.', '-', '+', 
-        # оскільки функція escape_all_except_formatting робить це агресивно.
         combo_text_raw = f"""
 📅 **Комбо та коди на {datetime.now().strftime('%d.%m.%Y')}**
 *(Ранній доступ Premium)*
@@ -240,8 +234,6 @@ async def command_combo_handler(message: types.Message) -> None:
         # Застосування агресивного екранування до всього тексту
         final_combo_text = escape_all_except_formatting(combo_text_raw)
         
-        # Ручне відновлення ** та стрілок видалено.
-        
         await message.answer(final_combo_text)
     else:
         # Повідомлення для непідписаних користувачів
@@ -251,8 +243,6 @@ async def command_combo_handler(message: types.Message) -> None:
         
         premium_message_raw = r"🔒 **Увага\!** Щоб отримати актуальні комбо та коди, вам потрібна Premium\-підписка\.\n\nНатисніть кнопку нижче, щоб оформити ранній доступ\." 
         premium_message = escape_all_except_formatting(premium_message_raw)
-        
-        # Ручне відновлення **видалено**.
         
         await message.answer(
             premium_message,
@@ -306,6 +296,19 @@ async def inline_callback_handler(callback: types.CallbackQuery, bot: Bot):
             
     # Обробка кнопки "Отримати Premium" (для звичайних користувачів)
     if callback.data == "get_premium":
+        # Перевірка: якщо адмін, то не створюємо інвойс, а активуємо вручну (для тестування)
+        if user_id == ADMIN_ID:
+             USER_SUBSCRIPTIONS[user_id] = True 
+             await callback.answer("Для адміністратора Premium активовано автоматично!")
+             # Повертаємося в головне меню, щоб оновити кнопки
+             welcome_message, keyboard = _build_start_message_content(
+                callback.from_user.first_name or "Користувач", 
+                user_id, 
+                True
+            )
+             await callback.message.edit_text(welcome_message, reply_markup=keyboard, parse_mode=ParseMode.MARKDOWN_V2)
+             return
+        
         await callback.answer("Переадресація на оплату...", show_alert=False)
         
         try:
@@ -327,7 +330,6 @@ async def inline_callback_handler(callback: types.CallbackQuery, bot: Bot):
                 
                 payment_message_raw = r"💰 **Оплата Premium**\n\nДля отримання раннього доступу сплатіть 1 TON (або еквівалент)\.\nНатисніть кнопку 'Сплатити' і після оплати — 'Я сплатив 💸'\."
                 payment_message = escape_all_except_formatting(payment_message_raw)
-                # Ручне відновлення **видалено**.
                 
                 await callback.message.edit_text(
                     payment_message, # ВИПРАВЛЕНО: Використовуємо edit_text, якщо це відповідь на іншу кнопку
@@ -345,7 +347,13 @@ async def inline_callback_handler(callback: types.CallbackQuery, bot: Bot):
         # Перенаправлення на обробник /combo
         # Виклик command_combo_handler з об'єктом message, який містить user_id
         await callback.answer("Отримуємо комбо...")
-        await command_combo_handler(callback.message)
+        # Створюємо імітацію об'єкта Message для command_combo_handler
+        mock_message = types.Message(message_id=callback.message.message_id, 
+                                     chat=callback.message.chat, 
+                                     from_user=callback.from_user, 
+                                     date=datetime.now())
+                                     
+        await command_combo_handler(mock_message)
 
 
 # Обробка кнопки "Я сплатив"
