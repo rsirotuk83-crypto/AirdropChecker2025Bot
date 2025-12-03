@@ -1,492 +1,386 @@
 import os
 import asyncio
-import json
-import httpx # Для асинхронних HTTP-запитів до Crypto Bot API
-import logging
+import httpx # Import для асинхронних HTTP-запитів до Crypto Bot API
 from datetime import datetime, timedelta
-from typing import Dict, Any, Union
-
-# --- aiogram 3.x імпорти ---
-from aiogram import Bot, Dispatcher, types, F, filters
+from aiogram import Bot, Dispatcher, types, F
+from aiogram.enums import ParseMode
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, Message
 from aiogram.filters import CommandStart, Command
-from aiogram.client.default import DefaultBotProperties
-from aiogram.webhook.aiohttp_server import SimpleRequestHandler, setup_application
-from aiohttp import web # Для веб-сервера
-# -------------------------------------------------
 
-# Налаштування логування
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
+# --- 1. КОНСТАНТИ ТА КОНФІГУРАЦІЯ ---
 
-# ─── ЗМІННІ ОТОЧЕННЯ (ОБОВ'ЯЗКОВІ) ──────────────────────────────────
-# Токен Telegram бота
-TOKEN = os.getenv("TOKEN")
-# Токен Crypto Bot Pay API (отримати у @CryptoBot)
-CRYPTO_BOT_TOKEN = os.getenv("CRYPTO_BOT_TOKEN") 
-# Базовий URL для Webhook (наприклад, https://my-app-name.railway.app)
-BASE_WEBHOOK_URL = os.getenv("BASE_WEBHOOK_URL") 
-# Секретний ключ для перевірки Webhook-запитів (будь-який довгий випадковий рядок)
-WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET") 
+# Отримання токенів з системних змінних Railway
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+CRYPTO_BOT_TOKEN = os.getenv("CRYPTO_BOT_TOKEN") # Токен для Crypto Bot API
+ADMIN_ID = os.getenv("ADMIN_ID") # ID адміністратора для управління преміумом
 
-if not all([TOKEN, CRYPTO_BOT_TOKEN, BASE_WEBHOOK_URL, WEBHOOK_SECRET]):
-    raise ValueError("Одна або більше обов'язкових змінних оточення (TOKEN, CRYPTO_BOT_TOKEN, BASE_WEBHOOK_URL, WEBHOOK_SECRET) не встановлені.")
+# Конфігурація платежів
+PAYMENT_AMOUNT = "1.00" # Сума платежу (наприклад, 1.00 USD)
+CURRENCY = "USD"
+PAYMENT_ASSET = "USDT" # Використовуйте USDT для стабільності
+PAYMENT_INVOICE_URL = "https://pay.crypt.bot/api/createInvoice"
+PAYMENT_CHECK_URL = "https://pay.crypt.bot/api/getInvoices"
+INVOICE_DESCRIPTION = "Преміум доступ до комбо-кодів на 30 днів"
 
-# Налаштування Webhook-адрес
-WEBHOOK_PATH = "/webhook"
-WEBHOOK_URL = BASE_WEBHOOK_URL + WEBHOOK_PATH
-# Спеціальний endpoint для Crypto Bot (повинен бути вказаний в налаштуваннях Webhook Crypto Bot)
-CRYPTO_CALLBACK_PATH = "/crypto_callback"
+# Текст повного комбо (Сховано за преміумом)
+FULL_COMBO_TEXT = (
+    "⭐️ **Комбо та коди на {date} (PREMIUM)** ⭐️\n\n"
+    "💰 **ВСІ АКТУАЛЬНІ КОМБО-КОДИ (оновлення кожні 24 години)**:\n\n"
+    "1. **Hamster Kombat** → Pizza → Wallet → Rocket 🚀\n"
+    "2. **Blum** → Cipher: FREEDOM 🔐\n"
+    "3. **TapSwap** → MATRIX 🟢\n"
+    "4. **CATS** → MEOW2025 🐱\n"
+    "5. **Rocky Rabbit** → 3→1→4→2 🐰\n"
+    "6. **Yescoin** → ↑→↓← 🟡\n"
+    "7. **DOGS** → DOGS2025 🐶\n"
+    "8. **PixelTap** → FIRE 🔥\n"
+    "9. **W-Coin** → A→B→C→D 🪙\n"
+    "10. **MemeFi** → LFG 🐸\n"
+    "11. **DotCoin** → PRO \n"
+    "12. **BountyBot** → BTC \n"
+    "13. **NEAR Wallet** → BONUS \n"
+    "14. **Hot Wallet** → MOON \n"
+    "15. **Avagold** → GOLD \n"
+    "16. **CEX.IO** → STAKE \n"
+    "17. **Pocketfi** → POCKET \n"
+    "18. **Seedify** → SEED \n"
+    "19. **QDROP** → AIRDROP \n"
+    "20. **MetaSense** → MET \n"
+    "21. **SQUID** → FISH 🐟\n\n"
+    "***+ ще 5-7 рідкісних комбо щодня...***"
+)
 
-# Налаштування сервера
-WEB_SERVER_HOST = "0.0.0.0" # Зазвичай "0.0.0.0" для Railway
-WEB_SERVER_PORT = os.environ.get("PORT", 8080) # Порт, який надає Railway
+# --- 2. СЛОВНИКИ ТА БАЗА ДАНИХ (для прикладу - в пам'яті) ---
 
-# Ініціалізація бота та диспетчера
-bot = Bot(token=TOKEN, default=DefaultBotProperties(parse_mode="HTML"))
-dp = Dispatcher()
+# База даних користувачів (UserID: {'lang': 'ua', 'premium_expiry': datetime_object or None})
+user_data = {}
 
-# ─── НАЛАШТУВАННЯ АДМІНА ─────────────────────────────────────────────
-ADMIN_ID = 123456789  # <--- ПОТРІБНО ЗАМІНИТИ СВОЇМ РЕАЛЬНИМ ЧИСЛОВИМ ID!
-ADMIN_USERNAME = "@YourAdminUsername" # <--- ПОТРІБНО ЗАМІНИТИ СВОЇМ РЕАЛЬНИМ НІКНЕЙМОМ!
-# ────────────────────────────────────────────────────────────────────
-
-# Файли для зберігання даних
-LANG_FILE = "lang.json"
-PREMIUM_USERS_FILE = "premium_users.json" 
-
-# ─── КОНСТАНТИ CRYPTO BOT ──────────────────────────────────────────
-CRYPTO_BOT_API_BASE = "https://pay.crypt.bot/api"
-INVOICE_AMOUNT = "1.00"
-INVOICE_ASSET = "USDT" # Використовуємо USDT (наприклад, на мережі TON або TRC20)
-
-# ─── ПЕРЕКЛАДИ ─────────────────────
-
-TEXTS: Dict[str, Dict[str, str]] = {
-    "uk": {"flag": "🇺🇦", "name": "Українська", "start": "Привіт! @CryptoComboDaily\nВсі комбо та коди 20+ тапалок в одному місці\n\nОбери мову:",
-           "set": "Мову змінено на українську ✅",
-           "btn": "Сьогоднішні комбо",
-           "combo_header": "Комбо та коди на",
-           "premium_text": "\n\n<b>ПОВНИЙ ДОСТУП:</b>\n\n🟢 <b>Преміум {amount} {asset}/міс</b> — ранній доступ + всі коди (20+ ігор).",
-           "premium_active": "Преміум активовано на місяць! ✅",
-           "invoice_btn": f"💳 Оплатити Преміум {INVOICE_AMOUNT} {INVOICE_ASSET}",
-           "invoice_msg": "⏳ Ваш рахунок створено. Будь ласка, перейдіть до оплати. Після успішної оплати, доступ буде активовано автоматично.",
-           "invoice_error": "❌ Не вдалося створити рахунок. Спробуйте пізніше або зв'яжіться з адміністратором.",
-           "admin_ok": "✅ Преміум активовано для користувача {user_id} до {expiry_date}.",
-           "admin_deact": "❌ Преміум деактивовано для користувача {user_id}.",
-           "admin_info": "Користувач {user_id} — не преміум або термін дії закінчився.",
-           "admin_error": "❌ Помилка: Введіть коректну команду, наприклад: /activate 123456789",
-           "admin_not": "У вас немає прав адміністратора для цієї команди.",
-           },
-    # Для стислості інші мови використовують ті самі шаблони, просто замінивши слова:
-    "ru": {"flag": "🇷🇺", "name": "Русский", "start": "Привет! @CryptoComboDaily\nВсе комбо и коды 20+ тапалок в одном месте\n\nВыбери язык:",
-           "set": "Язык изменён на русский ✅",
-           "btn": "Сегодняшние комбо",
-           "combo_header": "Комбо и коды на",
-           "premium_text": "\n\n<b>ПОЛНЫЙ ДОСТУП:</b>\n\n🟢 <b>Премиум {amount} {asset}/мес</b> — ранний доступ + все коды (20+ игр).",
-           "premium_active": "Премиум активирован на месяц! ✅",
-           "invoice_btn": f"💳 Оплатить Премиум {INVOICE_AMOUNT} {INVOICE_ASSET}",
-           "invoice_msg": "⏳ Ваш счёт создан. Пожалуйста, перейдите к оплате. После успешной оплаты, доступ будет активирован автоматически.",
-           "invoice_error": "❌ Не удалось создать счёт. Попробуйте позже или свяжитесь с администратором.",
-           "admin_ok": "✅ Премиум активирован для пользователя {user_id} до {expiry_date}.",
-           "admin_deact": "❌ Премиум деактивирован для пользователя {user_id}.",
-           "admin_info": "Пользователь {user_id} — не премиум или срок действия истек.",
-           "admin_error": "❌ Ошибка: Введите корректную команду, например: /activate 123456789",
-           "admin_not": "У вас нет прав администратора для этой команды.",
-           },
-    # (Інші мови скорочені для стислості)
+# Тексти для багатомовності
+TEXTS = {
+    'ua': {
+        'welcome': "Привіт! Я твій бот для щоденних комбо-кодів та шифрів для найпопулярніших крипто-тапалок.\n\n**Обери мову, або натисни /combo, щоб почати!**",
+        'lang_changed': "✅ Мову змінено на українську.",
+        'combo_free': "🔒 **Сьогоднішнє комбо**\n\nЦей розділ доступний тільки для Premium користувачів. Отримайте **ранній доступ** до комбо-кодів для 20+ ігор лише за **{amount} {currency}** на місяць!",
+        'combo_premium': FULL_COMBO_TEXT,
+        'premium_active': "✅ **PREMIUM АКТИВОВАНО!**\n\nВаша підписка діє до: **{expiry_date} (UTC)**.\nОсь ваше сьогоднішнє комбо 👇",
+        'buy_button': f"💳 Придбати Premium ({PAYMENT_AMOUNT} {CURRENCY} / 30 днів)",
+        'check_button': "✅ Я оплатив (Перевірити платіж)",
+        'checking': "⏱️ Перевіряю статус вашого платежу... Це може зайняти кілька секунд.",
+        'paid_success': "🎉 **Оплата успішна!**\n\nВашу підписку активовано на 30 днів! Дякую за підтримку. Отримайте ваше комбо, натиснувши /combo.",
+        'paid_fail': "❌ **Платіж не знайдено або він не завершений.**\n\nБудь ласка, переконайтеся, що ви надіслали {amount} {currency} на інвойс, і повторіть спробу. Якщо проблема не зникає, зв'яжіться з адміністратором.",
+        'admin_activated': "✅ **Преміум активовано** для {user_id} до {expiry_date}.",
+        'admin_deactivated': "✅ **Преміум деактивовано** для {user_id}.",
+        'admin_only': "❌ Ця команда доступна лише адміністратору.",
+        'usage_admin': "Використання:\n`/activate <UserID>`\n`/deactivate <UserID>`",
+    },
+    'ru': {
+        'welcome': "Привет! Я твой бот для ежедневных комбо-кодов и шифров для самых популярных крипто-тапалок.\n\n**Выбери язык, или нажми /combo, чтобы начать!**",
+        'lang_changed': "✅ Язык изменен на русский.",
+        'combo_free': "🔒 **Сегодняшнее комбо**\n\nЭтот раздел доступен только для Premium пользователей. Получите **ранний доступ** к комбо-кодам для 20+ игр всего за **{amount} {currency}** в месяц!",
+        'combo_premium': FULL_COMBO_TEXT.replace('Комбо та коди', 'Комбо и коды').replace('сьогоднішнє', 'сегодняшнее'),
+        'premium_active': "✅ **PREMIUM АКТИВИРОВАН!**\n\nВаша подписка действует до: **{expiry_date} (UTC)**.\nВот ваше сегодняшнее комбо 👇",
+        'buy_button': f"💳 Купить Premium ({PAYMENT_AMOUNT} {CURRENCY} / 30 дней)",
+        'check_button': "✅ Я оплатил (Проверить платеж)",
+        'checking': "⏱️ Проверяю статус вашего платежа... Это может занять несколько секунд.",
+        'paid_success': "🎉 **Оплата успешна!**\n\nВаша подписка активирована на 30 дней! Спасибо за поддержку. Получите ваше комбо, нажав /combo.",
+        'paid_fail': "❌ **Платеж не найден или не завершен.**\n\nПожалуйста, убедитесь, что вы отправили {amount} {currency} на инвойс, и повторите попытку. Если проблема не исчезает, свяжитесь с администратором.",
+        'admin_activated': "✅ **Премиум активирован** для {user_id} до {expiry_date}.",
+        'admin_deactivated': "✅ **Премиум деактивирован** для {user_id}.",
+        'admin_only': "❌ Эта команда доступна только администратору.",
+        'usage_admin': "Использование:\n`/activate <UserID>`\n`/deactivate <UserID>`",
+    }
 }
 
-# Заповнюємо плейсхолдери в TEXTS
-for lang in TEXTS:
-    TEXTS[lang]["premium_text"] = TEXTS[lang]["premium_text"].format(amount=INVOICE_AMOUNT, asset=INVOICE_ASSET)
+# --- 3. УТИЛІТАРНІ ФУНКЦІЇ ДЛЯ БАЗИ ДАНИХ ---
 
-# ─── КОМБО-КОДИ ─────────────────────
-FULL_COMBO_TEXT = (
-    "Hamster Kombat → Pizza ➜ Wallet ➜ Rocket\n"
-    "Blum → Cipher: FREEDOM\n"
-    "TapSwap → MATRIX\n"
-    "CATS → MEOW2025\n"
-    "Rocky Rabbit → 3→1→4→2\n"
-    "Yescoin → ←↑→↓←\n"
-    "DOGS → DOGS2025\n"
-    "PixelTap → FIRE 💥\n"
-    "YesTap → WXYZ\n"
-    "W-Coin → A→B→C→D\n"
-    "MemeFi → LFG\n"
-    "DotCoin → PRO\n"
-    "BountyBot → BTC\n"
-    "NEAR Wallet → BONUS\n"
-    "Hot Wallet → MOON\n"
-    "Avagold → GOLD\n"
-    "CEX.IO → STAKE\n"
-    "Pocketfi → POCKET\n"
-    "Seedify → SEED\n"
-    "QDROP → AIRDROP\n"
-    "MetaSense → MET\n"
-    "SQUID → FISH\n"
-    "+ ще 5-7 рідкісних комбо..."
-)
+def get_user_lang(user_id):
+    """Отримує мову користувача, за замовчуванням - UA."""
+    return user_data.get(user_id, {}).get('lang', 'ua')
 
-DEMO_COMBO_TEXT = (
-    "Hamster Kombat → Pizza ➜ Wallet ➜ Rocket\n"
-    "Blum → Cipher: FREEDOM\n"
-    "TapSwap → MATRIX\n"
-    "CATS → MEOW2025\n"
-    "Rocky Rabbit → 3→1→4→2\n"
-    "Yescoin → ←↑→↓←\n"
-    "DOGS → DOGS2025\n"
-    "..."
-)
+def get_text(user_id, key, **kwargs):
+    """Повертає текст на потрібній мові з динамічними параметрами."""
+    lang = get_user_lang(user_id)
+    text = TEXTS.get(lang, TEXTS['ua']).get(key, f"Error: Key '{key}' not found.")
+    return text.format(**kwargs)
 
-# --- ФУНКЦІЇ РОБОТИ З ФАЙЛАМИ (LANG / PREMIUM) ---
+def is_premium(user_id):
+    """Перевіряє, чи активна преміум підписка."""
+    user = user_data.get(user_id)
+    if not user or 'premium_expiry' not in user or not user['premium_expiry']:
+        return False
+    
+    return user['premium_expiry'] > datetime.now()
 
-def get_lang(uid: Union[int, str]) -> str:
-    """Отримує обрану мову користувача (за замовчуванням 'uk')."""
-    if os.path.exists(LANG_FILE):
-        try:
-            with open(LANG_FILE, encoding="utf-8") as f:
-                data = json.load(f)
-            return data.get(str(uid), "uk")
-        except (IOError, json.JSONDecodeError) as e:
-            logger.error(f"Помилка читання або декодування {LANG_FILE}: {e}")
-            return "uk"
-    return "uk"
+def activate_premium(user_id):
+    """Активація преміум-підписки на 30 днів."""
+    if user_id not in user_data:
+        user_data[user_id] = {'lang': 'ua', 'premium_expiry': None}
 
-def save_lang(uid: Union[int, str], lang: str):
-    """Зберігає обрану мову користувача."""
-    data = {}
-    if os.path.exists(LANG_FILE):
-        try:
-            with open(LANG_FILE, encoding="utf-8") as f:
-                data = json.load(f)
-        except (IOError, json.JSONDecodeError):
-            logger.warning(f"Файл {LANG_FILE} пошкоджений або порожній. Створюємо новий.")
-            pass
-            
-    data[str(uid)] = lang
-    try:
-        with open(LANG_FILE, "w", encoding="utf-8") as f:
-            json.dump(data, f, indent=4, ensure_ascii=False) 
-    except IOError as e:
-        logger.error(f"Помилка запису в файл {LANG_FILE}: {e}")
-
-def get_premium_users() -> Dict[str, Dict[str, str]]:
-    """Читає дані про преміум-користувачів із датою закінчення підписки."""
-    if os.path.exists(PREMIUM_USERS_FILE):
-        try:
-            with open(PREMIUM_USERS_FILE, encoding="utf-8") as f:
-                return json.load(f)
-        except (IOError, json.JSONDecodeError) as e:
-            logger.error(f"Помилка читання або декодування {PREMIUM_USERS_FILE}: {e}")
-            return {}
-    return {}
-
-def save_premium_users(data: Dict[str, Dict[str, str]]):
-    """Зберігає дані про преміум-користувачів."""
-    try:
-        with open(PREMIUM_USERS_FILE, "w", encoding="utf-8") as f:
-            json.dump(data, f, indent=4, ensure_ascii=False)
-    except IOError as e:
-        logger.error(f"Помилка запису в файл {PREMIUM_USERS_FILE}: {e}")
-
-async def activate_premium(target_id: Union[int, str]):
-    """Активація преміуму для користувача і повідомлення його про це."""
-    target_id = str(target_id)
-    users_data = get_premium_users()
+    # Підписка на 30 днів, як ви просили
     expiry_date = datetime.now() + timedelta(days=30)
-    
-    users_data[target_id] = {
-        "expiry_date": expiry_date.isoformat(),
-        "start_date": datetime.now().isoformat()
-    }
-    save_premium_users(users_data)
-    
-    # Спробувати надіслати повідомлення активованому користувачу
-    l = get_lang(target_id)
+    user_data[user_id]['premium_expiry'] = expiry_date
+    return expiry_date.strftime("%Y-%m-%d %H:%M:%S")
+
+def deactivate_premium(user_id):
+    """Деактивація преміум-підписки."""
+    if user_id in user_data:
+        user_data[user_id]['premium_expiry'] = None
+
+# --- 4. ФУНКЦІЇ ДЛЯ ВЗАЄМОДІЇ З CRYPTO BOT API ---
+
+async def create_invoice(user_id):
+    """Створює інвойс через Crypto Bot API."""
     try:
-        await bot.send_message(chat_id=target_id, text=TEXTS.get(l, TEXTS['uk'])['premium_active'])
-        logger.info(f"Користувач {target_id} автоматично активований.")
-    except Exception as e:
-        logger.warning(f"Не вдалося надіслати повідомлення активованому користувачу {target_id}: {e}")
-
-
-def is_premium(uid: Union[int, str]) -> bool:
-    """Перевіряє, чи активна підписка у користувача."""
-    users_data = get_premium_users()
-    user_id = str(uid)
-    
-    if user_id in users_data:
-        expiry_date_str = users_data[user_id]["expiry_date"]
-        try:
-            expiry_date = datetime.fromisoformat(expiry_date_str)
-        except ValueError:
-            logger.error(f"Некоректний формат дати для {user_id}")
-            return False
+        # Використовуємо кастомний payload для ідентифікації користувача та перевірки
+        payload = {
+            "asset": PAYMENT_ASSET,
+            "amount": PAYMENT_AMOUNT,
+            "description": INVOICE_DESCRIPTION,
+            "paid_btn_name": "callback",
+            "paid_btn_url": f"t.me/{Bot.get_current().config.bot_username}?start=check_payment_{user_id}", # Посилання на бота для перевірки
+            "payload": f"combo_access_{user_id}", # Кастомний payload для ідентифікації
+            "allow_anonymous": True,
+            "allow_comments": False,
+            "fiat": CURRENCY
+        }
         
-        if expiry_date > datetime.now():
-            return True
-        else:
-            del users_data[user_id]
-            save_premium_users(users_data)
-            logger.info(f"Преміум користувача {user_id} закінчився і був видалений.")
-            return False
+        headers = {
+            "X-App-Token": CRYPTO_BOT_TOKEN
+        }
+        
+        async with httpx.AsyncClient(timeout=10) as client:
+            response = await client.post(PAYMENT_INVOICE_URL, headers=headers, json=payload)
+            response.raise_for_status() # Викликає виняток для HTTP-помилок
+            data = response.json()
             
-    return False
+            if data['ok'] and data['result']:
+                return data['result']['pay_url'], data['result']['invoice_id']
+            
+            print(f"Crypto Bot API Error: {data}")
+            return None, None
+            
+    except httpx.HTTPStatusError as e:
+        print(f"HTTP error creating invoice: {e.response.status_code} - {e.response.text}")
+        return None, None
+    except Exception as e:
+        print(f"Error creating invoice: {e}")
+        return None, None
 
-# ─── КОМАНДИ АДМІНІСТРАТОРА (Ручна активація для бекапу) ─────────────────────────
-
-@dp.message(Command("activate"), filters.StateFilter(None))
-async def admin_activate_handler(msg: types.Message):
-    """Активація преміуму для користувача (тільки для адміна)."""
-    l = get_lang(msg.from_user.id)
-    
-    if msg.from_user.id != ADMIN_ID:
-        await msg.answer(TEXTS.get(l, TEXTS['uk'])['admin_not'])
-        return
-
+async def check_invoice(invoice_id):
+    """Перевіряє статус інвойсу через Crypto Bot API."""
     try:
-        target_id = msg.text.split()[1]
-        int(target_id)
-    except (IndexError, ValueError):
-        await msg.answer(TEXTS.get(l, TEXTS['uk'])['admin_error'])
-        return
+        params = {
+            "invoice_ids": invoice_id
+        }
+        headers = {
+            "X-App-Token": CRYPTO_BOT_TOKEN
+        }
 
-    await activate_premium(target_id)
-    
-    users_data = get_premium_users()
-    expiry_date_str = users_data.get(target_id, {}).get("expiry_date", datetime.now().isoformat())
-    expiry_date = datetime.fromisoformat(expiry_date_str)
-    
-    response_text = TEXTS.get(l, TEXTS['uk'])['admin_ok'].format(
-        user_id=target_id,
-        expiry_date=expiry_date.strftime('%d.%m.%Y')
-    )
-    await msg.answer(response_text)
-
-
-@dp.message(Command("deactivate"), filters.StateFilter(None))
-async def admin_deactivate(msg: types.Message):
-    """Деактивація преміуму для користувача (тільки для адміна)."""
-    l = get_lang(msg.from_user.id)
-    
-    if msg.from_user.id != ADMIN_ID:
-        await msg.answer(TEXTS.get(l, TEXTS['uk'])['admin_not'])
-        return
-
-    try:
-        target_id = msg.text.split()[1]
-        int(target_id)
-    except (IndexError, ValueError):
-        await msg.answer(TEXTS.get(l, TEXTS['uk'])['admin_error'])
-        return
-    
-    users_data = get_premium_users()
-    
-    if target_id in users_data:
-        del users_data[target_id]
-        save_premium_users(users_data)
-        response_text = TEXTS.get(l, TEXTS['uk'])['admin_deact'].format(user_id=target_id)
-    else:
-        response_text = TEXTS.get(l, TEXTS['uk'])['admin_info'].format(user_id=target_id)
-
-    await msg.answer(response_text)
-
-# ─── ФУНКЦІЇ РОБОТИ З CRYPTO BOT API ─────────────────────────────
-
-async def create_invoice(user_id: int) -> Union[str, None]:
-    """Створює інвойс через Crypto Bot Pay API та повертає посилання на оплату."""
-    
-    headers = {
-        "Authorization": f"Token {CRYPTO_BOT_TOKEN}",
-        "Content-Type": "application/json"
-    }
-    
-    payload = {
-        "asset": INVOICE_ASSET,
-        "amount": INVOICE_AMOUNT,
-        "description": f"Premium access for user {user_id}",
-        "payload": str(user_id), # Передаємо ID користувача для ідентифікації
-        "paid_btn_name": "open-bot", # Кнопка після оплати
-        "paid_btn_url": f"https://t.me/{bot.me.username}?start=premium_ok" # Посилання назад на бота
-    }
-    
-    # Використовуємо httpx для асинхронного запиту
-    async with httpx.AsyncClient(base_url=CRYPTO_BOT_API_BASE, timeout=10.0) as client:
-        try:
-            response = await client.post("/createInvoice", headers=headers, json=payload)
+        async with httpx.AsyncClient(timeout=10) as client:
+            response = await client.get(PAYMENT_CHECK_URL, headers=headers, params=params)
             response.raise_for_status()
             data = response.json()
             
-            if data.get("ok") and data.get("result"):
-                return data["result"]["pay_url"]
+            if data['ok'] and data['result']:
+                # Перевіряємо статус першого (і єдиного) інвойсу
+                invoice = data['result']['items'][0]
+                return invoice['status'] == 'paid' # True, якщо оплачено
             
-            logger.error(f"Помилка API Crypto Bot: {data.get('error', 'Невідома помилка')}")
-            return None
-        except httpx.HTTPStatusError as e:
-            logger.error(f"HTTP помилка при створенні інвойсу: {e.response.text}")
-            return None
-        except httpx.RequestError as e:
-            logger.error(f"Помилка запиту до Crypto Bot API: {e}")
-            return None
-
-
-# ─── WEBHOOK HANDLER ДЛЯ CRYPTO BOT (ОКРЕМИЙ ENDPOINT) ────────────────
-
-async def crypto_webhook_handler(request: web.Request) -> web.Response:
-    """Обробляє Webhook-запити від Crypto Bot після успішної оплати."""
-    
-    # 1. Перевірка секретного ключа (для безпеки)
-    # Хоча Crypto Bot не вимагає Secret у заголовках, краще його перевірити в тілі
-    try:
-        data: Dict[str, Any] = await request.json()
-    except Exception:
-        return web.Response(text="Invalid JSON", status=400)
-
-    # 2. Перевірка статусу та даних
-    update = data.get("update")
-    if not update:
-        return web.Response(text="OK") # Ігноруємо без update
-        
-    invoice = update.get("payload")
-    
-    # Перевіряємо, чи це подія "invoice_paid"
-    if invoice and invoice.get("status") == "paid":
-        user_id_str = invoice.get("payload")
-        
-        if user_id_str is None:
-            logger.error("Отримано Webhook без 'payload' (ID користувача).")
-            return web.Response(text="OK") 
-        
-        try:
-            target_id = int(user_id_str)
-            # 3. Автоматична активація
-            await activate_premium(target_id)
-            logger.info(f"WebHook: Автоматична активація для користувача {target_id}")
+            print(f"Crypto Bot API Check Error: {data}")
+            return False
             
-        except ValueError:
-            logger.error(f"Некоректний ID користувача в 'payload': {user_id_str}")
-        
-    return web.Response(text="OK") # Завжди повертаємо OK, щоб не було повторних надсилань
+    except httpx.HTTPStatusError as e:
+        print(f"HTTP error checking invoice: {e.response.status_code} - {e.response.text}")
+        return False
+    except Exception as e:
+        print(f"Error checking invoice: {e}")
+        return False
 
+# --- 5. ОБРОБНИКИ (HANDLERS) ---
 
-# ─── КНОПКИ ТА ЗВИЧАЙНІ КОМАНДИ ─────────────────────────
-
-lang_kb = types.InlineKeyboardMarkup(inline_keyboard=[
-    [types.InlineKeyboardButton(text=f"{TEXTS['uk']['flag']} {TEXTS['uk']['name']}", callback_data="lang_uk")],
-    [types.InlineKeyboardButton(text=f"{TEXTS['ru']['flag']} {TEXTS['ru']['name']}", callback_data="lang_ru")],
-    [types.InlineKeyboardButton(text=f"{TEXTS['uk']['flag']} {TEXTS['uk']['name']}", callback_data="lang_en")],
-    [types.InlineKeyboardButton(text=f"{TEXTS['uk']['flag']} {TEXTS['uk']['name']}", callback_data="lang_es")],
-    [types.InlineKeyboardButton(text=f"{TEXTS['uk']['flag']} {TEXTS['uk']['name']}", callback_data="lang_de")]
-])
-
+# Обробник команди /start
 @dp.message(CommandStart())
-async def start(msg: types.Message):
-    """Обробник команди /start. Пропонує обрати мову."""
-    l = get_lang(msg.from_user.id)
-    await msg.answer(TEXTS[l]["start"], reply_markup=lang_kb)
+async def command_start_handler(message: Message) -> None:
+    user_id = message.from_user.id
+    
+    # Ініціалізація даних користувача, якщо він новий
+    if user_id not in user_data:
+        user_data[user_id] = {'lang': 'ua', 'premium_expiry': None}
 
-@dp.callback_query(F.data.startswith("lang_"))
-async def set_lang(cb: types.CallbackQuery):
-    """Обробник вибору мови. Зберігає мову і змінює клавіатуру."""
-    l = cb.data.split("_")[1]
-    save_lang(cb.from_user.id, l)
-    
-    kb = types.ReplyKeyboardMarkup(keyboard=[[types.KeyboardButton(text=TEXTS[l]["btn"])]], 
-                                   resize_keyboard=True, 
-                                   input_field_placeholder=TEXTS[l]["btn"])
-    
-    await cb.message.edit_text(TEXTS[l]["set"], reply_markup=None) 
-    await cb.message.answer(TEXTS[l]["set"], reply_markup=kb) 
-    await cb.answer(TEXTS[l]["set"])
+    # Кнопки вибору мови
+    keyboard = InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🇺🇦 Українська", callback_data="set_lang_ua")],
+        [InlineKeyboardButton(text="🇷🇺 Русский", callback_data="set_lang_ru")],
+        [InlineKeyboardButton(text="🔑 /combo", callback_data="show_combo")],
+    ])
 
-@dp.message(F.text.func(lambda m: m in [TEXTS[x]["btn"] for x in TEXTS]))
-async def combos(msg: types.Message):
-    """Відправляє комбо-коди, надаючи повний список лише преміум-користувачам."""
-    l = get_lang(msg.from_user.id)
-    today_date = datetime.now().strftime('%d.%m.%Y')
+    await message.answer(get_text(user_id, 'welcome'), reply_markup=keyboard)
+
+# Обробник команди /combo та натискання кнопки "Сьогоднішнє комбо"
+@dp.message(Command("combo"))
+@dp.callback_query(F.data == "show_combo")
+async def show_combo_handler(callback_or_message):
     
-    text = f"<b>{TEXTS[l]['combo_header']} {today_date}</b>\n\n"
-    
-    is_user_premium = is_premium(msg.from_user.id)
-    
-    if is_user_premium:
-        text += FULL_COMBO_TEXT
-        await msg.answer(text)
+    if isinstance(callback_or_message, Message):
+        message = callback_or_message
     else:
-        # БЕЗКОШТОВНІ КОРИСТУВАЧІ: Демо-список + Пропозиція підписки
-        text += DEMO_COMBO_TEXT
+        message = callback_or_message.message
+        await callback_or_message.answer() # Прибираємо годинник з кнопки
+
+    user_id = message.chat.id
+    lang = get_user_lang(user_id)
+
+    if is_premium(user_id):
+        # Premium: показуємо повний текст
+        expiry_date = user_data[user_id]['premium_expiry'].strftime("%Y-%m-%d %H:%M:%S")
+        text = get_text(user_id, 'premium_active', expiry_date=expiry_date)
+        combo_text = get_text(user_id, 'combo_premium', date=datetime.now().strftime("%d.%m.%Y"))
         
-        # 1. Створення інвойсу
-        pay_url = await create_invoice(msg.from_user.id)
-        
-        if pay_url:
-            # 2. Клавіатура з посиланням на оплату
-            kb = types.InlineKeyboardMarkup(inline_keyboard=[
-                [types.InlineKeyboardButton(text=TEXTS[l]['invoice_btn'], url=pay_url)],
-            ])
-            text += TEXTS[l]["premium_text"]
-            await msg.answer(text)
-            await msg.answer(TEXTS[l]["invoice_msg"], reply_markup=kb)
+        await message.answer(text, parse_mode=ParseMode.MARKDOWN)
+        await message.answer(combo_text, parse_mode=ParseMode.MARKDOWN)
+
+    else:
+        # Free: пропонуємо купити
+        pay_url, invoice_id = await create_invoice(user_id)
+
+        if not pay_url:
+            await message.answer("❌ **Виникла помилка** при створенні інвойсу. Спробуйте пізніше.")
+            return
+
+        # Зберігаємо invoice_id для подальшої перевірки (для простоти - в data)
+        if user_id not in user_data:
+            user_data[user_id] = {'lang': lang, 'premium_expiry': None, 'invoice_id': invoice_id}
         else:
-            # 3. Помилка створення інвойсу (резервний варіант)
-            text += TEXTS[l]["premium_text"]
-            await msg.answer(text)
-            await msg.answer(TEXTS[l]["invoice_error"])
+            user_data[user_id]['invoice_id'] = invoice_id
 
 
-@dp.message()
-async def echo_handler(message: types.Message):
-    """Обробник для будь-яких інших повідомлень."""
-    l = get_lang(message.from_user.id)
-    await message.answer(TEXTS[l]["start"], reply_markup=lang_kb)
+        # Клавіатура з посиланням на оплату та кнопкою перевірки
+        keyboard = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text=get_text(user_id, 'buy_button'), url=pay_url)],
+            [InlineKeyboardButton(text=get_text(user_id, 'check_button'), callback_data=f"check_payment_{invoice_id}")]
+        ])
+        
+        text = get_text(user_id, 'combo_free', amount=PAYMENT_AMOUNT, currency=CURRENCY)
+        await message.answer(text, reply_markup=keyboard, parse_mode=ParseMode.MARKDOWN)
 
+# Обробник кнопки перевірки платежу
+@dp.callback_query(F.data.startswith("check_payment_"))
+async def check_payment_callback(callback: types.CallbackQuery):
+    await callback.answer(get_text(callback.from_user.id, 'checking'))
 
-async def main():
-    logger.info("БОТ @CryptoComboDaily — ЗАПУСК WEBHOOK")
+    invoice_id = callback.data.split("_")[-1]
+    user_id = callback.from_user.id
     
-    # Встановлення Webhook для Telegram API
-    await bot.set_webhook(url=WEBHOOK_URL, secret=WEBHOOK_SECRET)
+    # 1. Перевіряємо статус інвойсу через Crypto Bot API
+    is_paid = await check_invoice(invoice_id)
     
-    # Налаштування AIOHTTP додатку
-    app = web.Application()
+    if is_paid:
+        # 2. Якщо оплачено, активуємо підписку
+        expiry_date = activate_premium(user_id)
+        
+        # 3. Редагуємо повідомлення, щоб повідомити про успіх
+        try:
+            await callback.message.edit_text(
+                get_text(user_id, 'paid_success'),
+                reply_markup=None,
+                parse_mode=ParseMode.MARKDOWN
+            )
+        except Exception:
+            # Якщо повідомлення занадто старе, просто надсилаємо нове
+            await callback.message.answer(
+                get_text(user_id, 'paid_success'),
+                parse_mode=ParseMode.MARKDOWN
+            )
+        
+    else:
+        # 4. Якщо не оплачено, повідомляємо користувача
+        await callback.message.answer(
+            get_text(user_id, 'paid_fail', amount=PAYMENT_AMOUNT, currency=CURRENCY),
+            parse_mode=ParseMode.MARKDOWN
+        )
+
+# Обробник вибору мови
+@dp.callback_query(F.data.startswith("set_lang_"))
+async def set_language_handler(callback: types.CallbackQuery):
+    lang_code = callback.data.split("_")[-1]
+    user_id = callback.from_user.id
     
-    # Обробник Webhook для Telegram
-    webhook_requests_handler = SimpleRequestHandler(
-        dispatcher=dp,
-        bot=bot,
-        secret_token=WEBHOOK_SECRET,
-    )
-    webhook_requests_handler.register(app, path=WEBHOOK_PATH)
+    if user_id not in user_data:
+        user_data[user_id] = {'lang': lang_code, 'premium_expiry': None}
+    else:
+        user_data[user_id]['lang'] = lang_code
+    
+    await callback.message.edit_text(get_text(user_id, 'lang_changed'), reply_markup=None)
+    await callback.answer(get_text(user_id, 'lang_changed'))
 
-    # Додаємо окремий маршрут для Crypto Bot Webhook
-    app.router.add_post(CRYPTO_CALLBACK_PATH, crypto_webhook_handler)
 
-    # Запуск веб-сервера AIOHTTP
-    runner = web.AppRunner(app)
-    await runner.setup()
-    site = web.TCPSite(runner, host=WEB_SERVER_HOST, port=WEB_SERVER_PORT)
-    await site.start()
+# --- 6. АДМІН-КОМАНДИ ---
 
-    logger.info(f"Web-сервер запущено на http://{WEB_SERVER_HOST}:{WEB_SERVER_PORT}")
-    logger.info(f"Telegram Webhook: {WEBHOOK_URL}")
-    logger.info(f"Crypto Callback: {BASE_WEBHOOK_URL}{CRYPTO_CALLBACK_PATH}")
+@dp.message(Command("activate"))
+async def admin_activate_handler(message: Message):
+    if str(message.from_user.id) != ADMIN_ID:
+        await message.answer(get_text(message.from_user.id, 'admin_only'))
+        return
 
-    # Чекаємо нескінченно, поки сервер працює
-    while True:
-        await asyncio.sleep(3600) # Чекаємо 1 годину
+    args = message.text.split()
+    if len(args) != 2:
+        await message.answer(get_text(message.from_user.id, 'usage_admin'))
+        return
+
+    target_user_id_str = args[1]
+    try:
+        target_user_id = int(target_user_id_str)
+        expiry_date = activate_premium(target_user_id)
+        await message.answer(get_text(message.from_user.id, 'admin_activated', user_id=target_user_id, expiry_date=expiry_date))
+    except ValueError:
+        await message.answer("❌ Невірний формат UserID. Це має бути число.")
+
+@dp.message(Command("deactivate"))
+async def admin_deactivate_handler(message: Message):
+    if str(message.from_user.id) != ADMIN_ID:
+        await message.answer(get_text(message.from_user.id, 'admin_only'))
+        return
+
+    args = message.text.split()
+    if len(args) != 2:
+        await message.answer(get_text(message.from_user.id, 'usage_admin'))
+        return
+
+    target_user_id_str = args[1]
+    try:
+        target_user_id = int(target_user_id_str)
+        deactivate_premium(target_user_id)
+        await message.answer(get_text(message.from_user.id, 'admin_deactivated', user_id=target_user_id))
+    except ValueError:
+        await message.answer("❌ Невірний формат UserID. Це має бути число.")
+
+# --- 7. ЗАПУСК БОТА ---
+
+async def main() -> None:
+    # Перевірка наявності токенів
+    if not BOT_TOKEN or not CRYPTO_BOT_TOKEN:
+        print("ПОМИЛКА: Не встановлено BOT_TOKEN або CRYPTO_BOT_TOKEN в змінних середовища.")
+        return
+    if not ADMIN_ID:
+        print("УВАГА: Не встановлено ADMIN_ID. Адмін-команди не працюватимуть.")
+
+    global dp # Потрібно для доступу до диспетчера
+    dp = Dispatcher()
+    bot = Bot(BOT_TOKEN, parse_mode=ParseMode.HTML)
+    
+    # Визначаємо ім'я бота для використання у посиланні оплати
+    bot_info = await bot.get_me()
+    bot.config.bot_username = bot_info.username
+    
+    print(f"Бот @{bot.config.bot_username} запущено. Починаю обробку оновлень...")
+    
+    # Запуск обробки всіх вхідних оновлень
+    await dp.start_polling(bot)
 
 if __name__ == "__main__":
-    # Створюємо порожні файли, якщо вони не існують
-    if not os.path.exists(LANG_FILE):
-        with open(LANG_FILE, 'w') as f:
-            f.write('{}')
-    if not os.path.exists(PREMIUM_USERS_FILE):
-        with open(PREMIUM_USERS_FILE, 'w') as f:
-            f.write('{}')
-
     try:
         asyncio.run(main())
     except KeyboardInterrupt:
-        logger.info("Бот зупинено вручну.")
+        print("Бот зупинено вручну.")
     except Exception as e:
-        logger.error(f"Критична помилка запуску: {e}")
+        print(f"Непередбачена помилка: {e}")
