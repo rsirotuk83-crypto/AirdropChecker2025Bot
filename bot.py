@@ -45,6 +45,7 @@ USER_SUBSCRIPTIONS: Dict[int, bool] = {}
 IS_ACTIVE = False # Глобальний стан активації комбо
 COMBO_CONTENT: str = r"❌ **Комбо ще не встановлено адміністратором\.**" 
 # НОВИЙ СТАН ДЛЯ АВТОМАТИЗАЦІЇ
+# ЗАЛИШЕНО ПОРОЖНІМ. АДМІНІСТРАТОР ПОВИНЕН ВСТАНОВИТИ ВЛАСНИЙ URL.
 AUTO_SOURCE_URL: str = "" 
 
 # --- Утиліти для персистентності (Імітація БД) ---
@@ -90,7 +91,7 @@ MARKDOWN_V2_SPECIAL_CHARS = r"([\[\]()~>#+=|{}.!-])"
 def escape_all_except_formatting(text: str) -> str:
     """
     Екранує ВСІ спеціальні символи Markdown V2, крім тих, що використовуються 
-    для необхідного форматування (** та `), а також зворотного слеша (\\). 
+    для необхідного форматування (** та `), а також зворотного слеша (\). 
     """
     # Екрануємо зворотний слеш
     text = text.replace('\\', r'\\')
@@ -140,6 +141,21 @@ async def fetch_and_update_combo(bot: Bot):
     
     if not AUTO_SOURCE_URL:
         logging.info("Автоматичне оновлення пропущено: AUTO_SOURCE_URL не встановлено.")
+        # Надіслати сповіщення адміністратору про необхідність встановлення URL, якщо він ще не отримував його.
+        # Це спростить життя, якщо бот перезавантажився, а URL не був встановлений.
+        if COMBO_CONTENT == r"❌ **Комбо ще не встановлено адміністратором\.**":
+            notification_raw = r"""
+⚠️ **АВТОМАТИЗАЦІЯ НЕ НАЛАШТОВАНА**
+Будь ласка, встановіть URL-адресу джерела для автоматичного оновлення, використовуючи команду `\/set\_source\_url`
+"""
+            try:
+                await bot.send_message(
+                    chat_id=ADMIN_ID,
+                    text=escape_all_except_formatting(notification_raw),
+                    parse_mode=ParseMode.MARKDOWN_V2
+                )
+            except Exception:
+                pass # Ігноруємо помилки, якщо адмін заблокував бота
         return
         
     logging.info(f"Починаю автоматичне оновлення з URL: {AUTO_SOURCE_URL}")
@@ -157,7 +173,7 @@ async def fetch_and_update_combo(bot: Bot):
                 save_persistent_state() # Зберігаємо новий контент
                 logging.info("✅ Успішно оновлено COMBO_CONTENT з зовнішнього джерела.")
                 
-                # Опціонально: Надіслати сповіщення адміністратору про оновлення
+                # Сповіщення адміністратору про оновлення
                 date_str_raw = datetime.now().strftime('%d.%m.%Y')
                 date_str_escaped = date_str_raw.replace('.', r'\.')
                 
@@ -241,8 +257,10 @@ def _build_start_message_content(user_name: str, user_id: int, is_admin: bool):
     if is_admin:
         status_text_parts.append(f"Глобальна Активність: {combo_status}")
         # Додаємо статус автооновлення
-        source_status = r"ВСТАНОВЛЕНО" if AUTO_SOURCE_URL else r"НЕ ВСТАНОВЛЕНО"
-        status_text_parts.append(f"Автооновлення: **{source_status}**")
+        source_status_display = "ВСТАНОВЛЕНО" if AUTO_SOURCE_URL else "НЕ ВСТАНОВЛЕНО"
+        # Екрануємо статус, оскільки він буде відображатися жирним шрифтом
+        source_status = r'**' + escape_all_except_formatting(source_status_display) + r'**'
+        status_text_parts.append(f"Автооновлення: {source_status}")
 
 
     status_text = "\n".join(status_text_parts) + "\n\n"
