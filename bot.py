@@ -1,171 +1,125 @@
-import requests
-from bs4 import BeautifulSoup
-import time
-import random
+import asyncio
 import logging
+import os
+from aiogram import Bot, Dispatcher, types, F
+from aiogram.enums import ParseMode
+from aiogram.filters import CommandStart
+from aiogram.client.default import DefaultBotProperties
 
-# !!! УВАГА: Якщо ви бачите цю помилку:
-# "DefaultBotProperties.__init__() got an unexpected keyword argument 'disable_web_page_preview'"
-# Це означає, що вам потрібно виправити ініціалізацію бота у вашому файлі bot.py.
-#
-# Знайдіть у bot.py рядок:
-# from aiogram import Bot
-# bot = Bot(token=BOT_TOKEN, parse_mode="HTML", disable_web_page_preview=True) # <-- ЗАСТАРІЛИЙ СИНТАКСИС
-#
-# І замініть його на ПРАВИЛЬНИЙ СИНТАКСИС (приклад):
-# from aiogram import Bot
-# from aiogram.client.default import DefaultBotProperties
-# from aiogram.enums.parse_mode import ParseMode
-#
-# def initialize_bot(token):
-#     default_properties = DefaultBotProperties(
-#         parse_mode=ParseMode.MARKDOWN,
-#         disable_web_page_preview=True, # або False, якщо хочете
-#         protect_content=False
-#     )
-#     return Bot(token=token, default=default_properties)
-#
-# # Виклик:
-# # bot = initialize_bot(BOT_TOKEN)
-# # -------------------------------------------------------------
-
+# Імпорт планувальника скрапінгу
+# Вважаємо, що цей файл знаходиться у тій самій директорії, що й bot.py
+from hamster_scraper import main_scheduler 
 
 # Налаштування логування
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
 
-# Список URL-адрес для скрапінгу (для підвищення надійності)
-# УВАГА: Ці URL є ПРИКЛАДАМИ. Для реальної роботи потрібно вказати актуальні адреси
-# агрегаторів, які ви відстежуєте.
-BACKUP_URLS = [
-    "https://miningcombo.com/daily-combo-hamster-kombat-today",  # Приклад 1
-    "https://tapswapcoin.com/hamster-kombat-combo",              # Приклад 2
-    "https://example.com/api/combo.html"                        # Гіпотетичне резервне джерело
-]
+# Отримання змінних середовища
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+ADMIN_ID = os.getenv("ADMIN_ID") # Ваш числовий ID для адмін-команд
+# CRYPTO_BOT_TOKEN = os.getenv("CRYPTO_BOT_TOKEN") # Токен для оплати (якщо використовується)
 
-def fetch_combo_cards(url: str, attempt: int) -> list or None:
-    """
-    Виконує запит до URL і парсить HTML за допомогою BeautifulSoup.
+# --- КРИТИЧНЕ ВИПРАВЛЕННЯ ПОМИЛКИ ІНІЦІАЛІЗАЦІЇ (Зберігаємо) ---
+def create_bot_instance(token: str) -> Bot:
+    """Створює екземпляр бота з властивостями за замовчуванням."""
+    if not token:
+        logger.critical("BOT_TOKEN не знайдено!")
+        raise ValueError("BOT_TOKEN не встановлено.")
+
+    default_properties = DefaultBotProperties(
+        parse_mode=ParseMode.MARKDOWN_V2, # Рекомендується для Telegram
+        disable_web_page_preview=True,    # Запобігає автоматичному відображенню посилань
+        protect_content=False
+    )
+    return Bot(token=token, default=default_properties)
+
+# Ініціалізація бота та диспетчера
+bot = create_bot_instance(BOT_TOKEN)
+dp = Dispatcher()
+
+# --- ХЕНДЛЕРИ КОМАНД ---
+
+def get_start_message_text(user_id: int, is_admin: bool) -> str:
+    """Формує текст вітального повідомлення, включаючи фікс escape-послідовностей."""
+    # Фікс: Використовуємо r-рядок або подвійне екранування, щоб уникнути SyntaxWarning
+    # Також використовуємо MarkdownV2 синтаксис (дві підкреслення __)
     
-    Args:
-        url (str): URL-адреса для скрапінгу.
-        attempt (int): Поточна спроба (для логування).
-        
-    Returns:
-        list or None: Список карток комбо або None у разі невдачі.
-    """
-    headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'}
+    # Використовуємо простий бекенд-статус
+    status_text = "АКТИВОВАНО" if user_id % 2 == 0 else "НЕАКТИВНО" 
+    admin_status = "Адміністратор" if is_admin else "Користувач"
+
+    # !!! ФІКС СИНТАКСИЧНОГО ПОПЕРЕДЖЕННЯ:
+    # Замінюємо '\.' на '.' або ' \\.' (у цьому випадку ' \.' для MarkdownV2)
+    # Щоб уникнути помилок в Python, використовуємо подвійне екранування '\\' для символів MarkdownV2,
+    # а для звичайного тексту '.' залишаємо без змін.
+    return (
+        f"👋 *Привіт, Роман\\!* \n\n"
+        f"Ваш ID: `{user_id}`\n"
+        f"Статус: *{admin_status}*\n"
+        f"Статус Premium: *{status_text}*\n"
+        f"Глобальна Активність: НЕАКТИВНО\n\n"
+        f"Цей бот надає ранній доступ до щоденних комбо та кодів для популярних криптоігор\\.\n"
+        f"Ціна Premium: 1 TON \\(або еквівалент\\)\\." 
+    )
+
+@dp.message(CommandStart())
+async def command_start_handler(message: types.Message) -> None:
+    """Обробляє команду /start."""
+    user_id = message.from_user.id
+    is_admin = str(user_id) == ADMIN_ID
     
-    try:
-        logging.info(f"Спроба {attempt}: Запит до {url}...")
-        
-        # Виконання HTTP-запиту
-        response = requests.get(url, headers=headers, timeout=10)
-        response.raise_for_status() # Викликає HTTPError для кодів 4xx/5xx
+    text = get_start_message_text(user_id, is_admin)
+    
+    # Клавіатура
+    keyboard = types.InlineKeyboardMarkup(
+        inline_keyboard=[
+            [types.InlineKeyboardButton(text="Отримати комбо зараз ➡️", callback_data="get_combo")],
+            [types.InlineKeyboardButton(text="Управління активацією ⚙️", callback_data="manage_activation")],
+        ]
+    )
 
-        # Парсинг HTML за допомогою BeautifulSoup
-        soup = BeautifulSoup(response.content, 'html.parser')
+    await message.answer(text, reply_markup=keyboard)
 
-        # --- НОВА, БІЛЬШ СТІЙКА ЛОГІКА ПАРСИНГУ ---
-        
-        # 1. Спробуємо знайти заголовок або контейнер, який містить ключові слова.
-        # Шукаємо заголовок, що містить "Daily Combo Cards" або "Комбо"
-        combo_header = soup.find(lambda tag: tag.name in ['h2', 'h3', 'p'] and 'combo' in tag.get_text().lower())
-        
-        cards = []
-        if combo_header:
-            # 2. Якщо заголовок знайдено, шукаємо найближчий список (ul/ol) або набір параграфів (p)
-            # у наступних 5 елементах, де можуть бути картки.
-            current_element = combo_header.find_next_sibling()
-            count = 0
-            while current_element and count < 5:
-                # Шукаємо список (ul) і збираємо елементи <li>
-                if current_element.name == 'ul' or current_element.name == 'ol':
-                    cards = [li.get_text(strip=True) for li in current_element.find_all('li')]
-                    break
-                
-                # Також шукаємо окремі параграфи або div'и, якщо вони містять назви карток
-                elif current_element.name in ['p', 'div'] and current_element.get_text(strip=True):
-                    # Якщо в одному елементі є декілька рядків, розділених переносом
-                    raw_text = current_element.get_text('\n', strip=True)
-                    lines = [line.strip() for line in raw_text.split('\n') if line.strip()]
-                    
-                    if len(lines) >= 3 and not cards: # Використовуємо, якщо не знайшли список
-                        cards = lines
-                        break
 
-                current_element = current_element.find_next_sibling()
-                count += 1
-        
-        # 3. Валідація результату
-        if len(cards) >= 3:
-            # Обмежуємо до перших трьох карток
-            final_cards = cards[:3]
-            logging.info(f"Успішно знайдено комбо: {final_cards}")
-            return final_cards
-        else:
-            logging.warning(f"Не вдалося знайти 3 або більше карток комбо. Знайдено: {len(cards)}. Можливо, структура сайту знову змінилася.")
-            return None
+# --- ХЕНДЛЕР ДЛЯ КНОПОК ТА ІНШИХ КОМАНД (ПРИКЛАД) ---
 
-    except requests.exceptions.HTTPError as e:
-        logging.error(f"Помилка HTTP для {url}: {e.response.status_code}. Перехід до наступного URL.")
-        return None
-    except requests.exceptions.ConnectionError:
-        logging.error(f"Помилка з'єднання: Не вдалося підключитися до {url}.")
-        return None
-    except requests.exceptions.Timeout:
-        logging.error(f"Таймаут запиту до {url}.")
-        return None
-    except Exception as e:
-        logging.critical(f"Неочікувана помилка під час парсингу {url}: {e}")
-        return None
+@dp.callback_query(F.data == "get_combo")
+async def process_get_combo(callback: types.CallbackQuery):
+    await callback.answer("Отримуємо комбо...", show_alert=False)
+    # Тут має бути логіка отримання актуального комбо з бази даних, яку оновлює скрапер
+    await callback.message.answer("Комбо ще не встановлено адміністратором\\.", parse_mode=ParseMode.MARKDOWN_V2)
 
-def main_scheduler():
-    """
-    Головний планувальник, який періодично викликає функцію скрапінгу.
-    """
-    COMBO_CARDS = None
-    update_interval_seconds = 60 * 60 * 3 # Перевірка кожні 3 години
 
-    logging.info("Планувальник Hamster Kombat запущено.")
+@dp.callback_query(F.data == "manage_activation")
+async def process_manage_activation(callback: types.CallbackQuery):
+    await callback.answer("Управління активацією")
+    await callback.message.answer("Тут буде панель управління активацією Premium\\.", parse_mode=ParseMode.MARKDOWN_V2)
 
-    while True:
-        try:
-            # Лічильник спроб
-            attempt_count = 1
-            
-            # Обхід резервних URL-адрес
-            for url in BACKUP_URLS:
-                COMBO_CARDS = fetch_combo_cards(url, attempt_count)
-                
-                if COMBO_CARDS:
-                    # Якщо комбо знайдено, виходимо з циклу URL
-                    break
-                    
-                attempt_count += 1
-            
-            if COMBO_CARDS:
-                # Успішне оновлення
-                logging.info(f"Останнє актуальне комбо: {COMBO_CARDS}. Чекаю на наступне оновлення.")
-                
-                # Тут можна додати код для оновлення бази даних (наприклад, Firestore)
-                # update_firestore_combo(COMBO_CARDS)
-                
-            else:
-                # Всі URL-адреси не спрацювали
-                logging.error("Не вдалося отримати актуальне комбо з жодного джерела.")
-            
-            # Затримка перед наступною перевіркою
-            sleep_time = update_interval_seconds + random.randint(-300, 300) # Додаємо випадковість
-            logging.info(f"Сплячка на {sleep_time // 60} хвилин...")
-            time.sleep(sleep_time)
 
-        except KeyboardInterrupt:
-            logging.warning("Планувальник зупинено користувачем.")
-            break
-        except Exception as e:
-            logging.critical(f"Фатальна помилка планувальника: {e}")
-            time.sleep(60) # Коротка пауза, перш ніж спробувати знову
+# --- ФОНОВЕ ВИКОНАННЯ СКРАПЕРА ---
+
+async def start_scheduler_task():
+    """Запускає основну функцію скрапера у фоновому режимі."""
+    logger.info("Запуск планувальника скрапінгу у фоновому режимі...")
+    # Використовуємо to_thread для блокуючої функції
+    await asyncio.to_thread(main_scheduler) 
+
+async def main() -> None:
+    """Головна функція запуску бота та планувальника."""
+    logger.info("Бот запущено. Починаю отримувати оновлення...")
+
+    # Запускаємо планувальник скрапінгу як фонову задачу
+    # Ця задача буде працювати паралельно з ботом
+    asyncio.create_task(start_scheduler_task())
+    
+    # Запускаємо опитування (polling) бота
+    await dp.start_polling(bot)
+    
+    logger.info("Бот зупинено.")
 
 if __name__ == "__main__":
-    # Запускаємо основну функцію
-    main_scheduler()
+    try:
+        # Використовуємо asyncio.run для запуску головної асинхронної функції
+        asyncio.run(main())
+    except Exception as e:
+        logger.critical(f"Критична помилка при запуску: {e}")
