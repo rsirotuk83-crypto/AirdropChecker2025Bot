@@ -4,6 +4,32 @@ import time
 import random
 import logging
 
+# !!! УВАГА: Якщо ви бачите цю помилку:
+# "DefaultBotProperties.__init__() got an unexpected keyword argument 'disable_web_page_preview'"
+# Це означає, що вам потрібно виправити ініціалізацію бота у вашому файлі bot.py.
+#
+# Знайдіть у bot.py рядок:
+# from aiogram import Bot
+# bot = Bot(token=BOT_TOKEN, parse_mode="HTML", disable_web_page_preview=True) # <-- ЗАСТАРІЛИЙ СИНТАКСИС
+#
+# І замініть його на ПРАВИЛЬНИЙ СИНТАКСИС (приклад):
+# from aiogram import Bot
+# from aiogram.client.default import DefaultBotProperties
+# from aiogram.enums.parse_mode import ParseMode
+#
+# def initialize_bot(token):
+#     default_properties = DefaultBotProperties(
+#         parse_mode=ParseMode.MARKDOWN,
+#         disable_web_page_preview=True, # або False, якщо хочете
+#         protect_content=False
+#     )
+#     return Bot(token=token, default=default_properties)
+#
+# # Виклик:
+# # bot = initialize_bot(BOT_TOKEN)
+# # -------------------------------------------------------------
+
+
 # Налаштування логування
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
