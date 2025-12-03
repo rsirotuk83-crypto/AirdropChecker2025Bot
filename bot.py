@@ -3,6 +3,7 @@ import asyncio
 import logging
 import json
 import httpx
+import re # <-- Додано для екранування
 from datetime import datetime
 
 from aiogram import Bot, Dispatcher, types, F
@@ -41,6 +42,15 @@ API_HEADERS = {
 USER_SUBSCRIPTIONS = {}
 IS_ACTIVE = False # Глобальний стан активації комбо
 
+# --- Утиліти ---
+
+def escape_markdown_v2(text: str) -> str:
+    """Екранує спеціальні символи Markdown V2, крім тих, що використовуються для форматування."""
+    # Екрануємо символи: _, *, [, ], (, ), ~, `, >, #, +, -, =, |, {, }, ., !
+    special_chars = r'([_*\\[\]()~`>#+\-=|{}.!])'
+    # Замінюємо кожен спеціальний символ на екранований (наприклад, _ на \_)
+    return re.sub(special_chars, r'\\\1', text)
+
 # --- Основні функції бота ---
 
 # Ініціалізація бота
@@ -48,8 +58,6 @@ def setup_bot():
     """Створює екземпляр бота з коректними налаштуваннями для aiogram 3.x."""
     bot_properties = DefaultBotProperties(
         parse_mode=ParseMode.MARKDOWN_V2,
-        # Залишаємо disable_web_page_preview, оскільки він має підтримуватися
-        # у нових версіях DefaultBotProperties
     )
     return Bot(token=BOT_TOKEN, default=bot_properties)
 
@@ -69,7 +77,6 @@ def _build_admin_menu_content():
         
     keyboard = types.InlineKeyboardMarkup(inline_keyboard=[
         [types.InlineKeyboardButton(text=button_text, callback_data=callback)],
-        # Додаємо кнопку "Назад" на випадок, якщо знадобиться
         [types.InlineKeyboardButton(text="⬅️ Назад до /start", callback_data="back_to_start")]
     ])
     
@@ -84,6 +91,9 @@ def _build_admin_menu_content():
 def _build_start_message_content(user_name: str, user_id: int, is_admin: bool):
     """Створює текст та клавіатуру для початкового повідомлення /start."""
     global IS_ACTIVE
+    
+    # ВИПРАВЛЕНО: Екрануємо ім'я користувача, щоб не ламалася розмітка Markdown V2
+    escaped_user_name = escape_markdown_v2(user_name)
     
     status_text = ""
     keyboard = None
@@ -100,7 +110,7 @@ def _build_start_message_content(user_name: str, user_id: int, is_admin: bool):
         ])
 
     welcome_message = (
-        f"👋 Привіт, {user_name}\\!\n\n"
+        f"👋 Привіт, {escaped_user_name}\\!\n\n"
         f"{status_text}"
         "Цей бот надає ранній доступ до щоденних комбо та кодів для популярних криптоігор\\.\n\n"
         "**Ціна Premium:** 1 TON \\(або еквівалент\\)\\."
@@ -161,7 +171,6 @@ async def command_combo_handler(message: types.Message) -> None:
             [types.InlineKeyboardButton(text="Отримати Premium 🔑", callback_data="get_premium")],
         ])
         await message.answer(
-            # ВИПРАВЛЕНО: Екрануємо '!' в повідомленні про відсутність підписки
             "🔒 **Увага\\!** Щоб отримати актуальні комбо та коди, вам потрібна Premium\\-підписка\\!\n\n"
             "Натисніть кнопку нижче, щоб оформити ранній доступ\\.",
             reply_markup=keyboard
@@ -170,7 +179,6 @@ async def command_combo_handler(message: types.Message) -> None:
 # Хендлер команди /admin_menu (БЕЗ ДЕКОРАТОРА)
 async def admin_menu_handler(message: types.Message):
     """Меню для активації/деактивації комбо (доступно лише адміністратору)."""
-    # Цей хендлер використовується для команди, тому надсилає НОВЕ повідомлення
     text, keyboard = _build_admin_menu_content()
     await message.answer(text, reply_markup=keyboard)
 
@@ -191,6 +199,7 @@ async def inline_callback_handler(callback: types.CallbackQuery):
                 True
             )
             await callback.answer("Повернення до головного меню...")
+            # ВИПРАВЛЕНО: Редагуємо повідомлення
             await callback.message.edit_text(welcome_message, reply_markup=keyboard)
             return
             
@@ -199,7 +208,6 @@ async def inline_callback_handler(callback: types.CallbackQuery):
             IS_ACTIVE = True
             await callback.answer("Комбо активовано!")
             text, keyboard = _build_admin_menu_content()
-            # Редагуємо повідомлення, щоб оновити клавіатуру
             await callback.message.edit_text(text, reply_markup=keyboard) 
             return
             
@@ -207,7 +215,6 @@ async def inline_callback_handler(callback: types.CallbackQuery):
             IS_ACTIVE = False
             await callback.answer("Комбо деактивовано!")
             text, keyboard = _build_admin_menu_content()
-            # Редагуємо повідомлення, щоб оновити клавіатуру
             await callback.message.edit_text(text, reply_markup=keyboard) 
             return
             
@@ -219,7 +226,6 @@ async def inline_callback_handler(callback: types.CallbackQuery):
             # Обробка натискання кнопки "Управління активацією"
             await callback.answer("Відкриваю адмін-меню...")
             text, keyboard = _build_admin_menu_content()
-            # Редагуємо повідомлення (/start), щоб показати меню адміністратора
             await callback.message.edit_text(text, reply_markup=keyboard)
             return
 
@@ -250,11 +256,11 @@ async def inline_callback_handler(callback: types.CallbackQuery):
                     reply_markup=keyboard
                 )
             else:
-                await callback.message.answer("⚠️ Не вдалося створити платіжний інвойс\\. Спробуйте пізніше\\.") # Екрануємо '.'
+                await callback.message.answer("⚠️ Не вдалося створити платіжний інвойс\\. Спробуйте пізніше\\.") 
                 
         except Exception as e:
             logging.error(f"Помилка створення інвойсу: {e}")
-            await callback.message.answer("❌ Сталася помилка при підключенні до платіжної системи\\.") # Екрануємо '.'
+            await callback.message.answer("❌ Сталася помилка при підключенні до платіжної системи\\.") 
             
 # Обробка кнопки "Я сплатив" (БЕЗ ДЕКОРАТОРА)
 async def check_payment_handler(callback: types.CallbackQuery):
@@ -271,7 +277,7 @@ async def check_payment_handler(callback: types.CallbackQuery):
             if status == 'paid':
                 # Успішна оплата
                 await callback.message.edit_text(
-                    "🎉 **Оплата успішна\\!** Ви отримали Premium\\-доступ\\.\n" # Екрануємо '!'
+                    "🎉 **Оплата успішна\\!** Ви отримали Premium\\-доступ\\.\n"
                     "Надішліть `/combo` для отримання актуальних кодів\\."
                 )
                 await callback.answer("Підписка активована!", show_alert=True)
@@ -279,25 +285,25 @@ async def check_payment_handler(callback: types.CallbackQuery):
                 return
             
             elif status == 'pending':
-                await callback.answer("Платіж ще обробляється\\. Спробуйте через хвилину\\.") # Екрануємо '.'
+                await callback.answer("Платіж ще обробляється\\. Спробуйте через хвилину\\.") 
                 return
             
             elif status == 'expired':
                 await callback.message.edit_text(
-                    "❌ **Термін дії інвойсу сплив\\.** Будь ласка, створіть новий інвойс для оплати\\." # Екрануємо '.'
+                    "❌ **Термін дії інвойсу сплив\\.** Будь ласка, створіть новий інвойс для оплати\\."
                 )
-                await callback.answer("Термін дії сплив\\.", show_alert=True) # Екрануємо '.'
+                await callback.answer("Термін дії сплив\\.", show_alert=True) 
                 return
                 
             else: # refunded, failed
                 await callback.message.answer("Статус платежу: " + status)
         
         else:
-            await callback.answer("Не вдалося отримати статус інвойсу\\. Зверніться до адміністратора\\.") # Екрануємо '.'
+            await callback.answer("Не вдалося отримати статус інвойсу\\. Зверніться до адміністратора\\.") 
             
     except Exception as e:
         logging.error(f"Помилка перевірки статусу платежу: {e}")
-        await callback.answer("❌ Сталася помилка при перевірці платежу\\.", show_alert=True) # Екрануємо '.'
+        await callback.answer("❌ Сталася помилка при перевірці платежу\\.", show_alert=True) 
 
 
 # --- HTTP запити до Crypto Bot API ---
