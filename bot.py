@@ -14,19 +14,16 @@ from aiogram.enums import ParseMode
 logging.basicConfig(level=logging.INFO)
 
 # --- Налаштування змінних середовища ---
-# Зчитуємо змінні з Railway (змінні, які ви вже успішно налаштували)
+# Зчитуємо змінні з Railway
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 CRYPTO_BOT_TOKEN = os.getenv("CRYPTO_BOT_TOKEN")
 ADMIN_ID = os.getenv("ADMIN_ID")
 
 if not BOT_TOKEN or not CRYPTO_BOT_TOKEN or not ADMIN_ID:
-    # Цей лог допоможе виявити, якщо змінна не була знайдена
     logging.error("ПОМИЛКА: Не встановлено BOT_TOKEN, CRYPTO_BOT_TOKEN або ADMIN_ID в змінних середовища.")
-    # Припиняємо роботу, щоб не використовувати невірні токени
     exit(1)
 
 try:
-    # ADMIN_ID повинен бути числовим, тому перетворюємо його
     ADMIN_ID = int(ADMIN_ID)
 except ValueError:
     logging.error("ПОМИЛКА: Змінна ADMIN_ID повинна бути числовим ідентифікатором.")
@@ -42,26 +39,25 @@ API_HEADERS = {
 
 # Стан підписки (імітація бази даних в пам'яті)
 USER_SUBSCRIPTIONS = {}
-IS_ACTIVE = False # Глобальний стан активації комбо (чи можуть його бачити всі)
+IS_ACTIVE = False # Глобальний стан активації комбо
 
 # --- Основні функції бота ---
 
-# Ініціалізація бота з використанням DefaultBotProperties (ВИПРАВЛЕННЯ ДЛЯ AIOGRAM 3.x)
+# Ініціалізація бота
 def setup_bot():
     """Створює екземпляр бота з коректними налаштуваннями для aiogram 3.x."""
     bot_properties = DefaultBotProperties(
         parse_mode=ParseMode.MARKDOWN_V2,
-        disable_web_page_preview=True 
+        # Залишаємо disable_web_page_preview, оскільки він має підтримуватися
+        # у нових версіях DefaultBotProperties
     )
     return Bot(token=BOT_TOKEN, default=bot_properties)
 
-# Хендлер команди /start
-# ВИДАЛЕНО @CommandStart()
+# Хендлер команди /start (БЕЗ ДЕКОРАТОРА)
 async def command_start_handler(message: types.Message) -> None:
     """Обробляє команду /start і показує статус підписки."""
     user_id = message.from_user.id
     
-    # Перевірка, чи користувач є адміністратором
     is_admin = user_id == ADMIN_ID
     
     status_text = ""
@@ -87,8 +83,7 @@ async def command_start_handler(message: types.Message) -> None:
     
     await message.answer(welcome_message, reply_markup=keyboard)
 
-# Хендлер команди /combo (для отримання комбо)
-# ВИДАЛЕНО @Command("combo")
+# Хендлер команди /combo (БЕЗ ДЕКОРАТОРА)
 async def command_combo_handler(message: types.Message) -> None:
     """Обробляє команду /combo."""
     user_id = message.from_user.id
@@ -100,15 +95,15 @@ async def command_combo_handler(message: types.Message) -> None:
 📅 **Комбо та коди на {datetime.now().strftime('%d.%m.%Y')}**
 *(Ранній доступ Premium)*
         
-*Hamster Kombat* \\→ Pizza \\→ Wallet \\→ Rocket
+*Hamster Kombat* \\rightarrow Pizza \\rightarrow Wallet \\rightarrow Rocket
 *Blum* \\rightarrow Cipher: FREEDOM
 *TapSwap* \\rightarrow MATRIX
 *CATS* \\rightarrow MEOW2025
-*Rocky Rabbit* \\rightarrow 3\\→1\\→4\\→2
-*Yescoin* \\rightarrow ⬆️\\→⬇️\\→⬆️
+*Rocky Rabbit* \\rightarrow 3\\rightarrow1\\rightarrow4\\rightarrow2
+*Yescoin* \\rightarrow ⬆️\\rightarrow⬇️\\rightarrow⬆️
 *DOGS* \\rightarrow DOGS2025
 *PixelTap* \\rightarrow FIRE ✨
-*W\\-Coin* \\rightarrow A\\→B\\→C\\→D
+*W\\-Coin* \\rightarrow A\\rightarrow B\\rightarrow C\\rightarrow D
 *Memefi* \\rightarrow LFG
 *DotCoin* \\rightarrow PRO
 *BountyBot* \\rightarrow BTC
@@ -136,9 +131,7 @@ async def command_combo_handler(message: types.Message) -> None:
             reply_markup=keyboard
         )
 
-# Хендлер для меню адміністратора
-# ВИДАЛЕНО @Command("admin_menu")
-# ВИДАЛЕНО @F.from_user.id == ADMIN_ID
+# Хендлер для меню адміністратора (БЕЗ ДЕКОРАТОРА)
 async def admin_menu_handler(message: types.Message):
     """Меню для активації/деактивації комбо (доступно лише адміністратору)."""
     global IS_ACTIVE
@@ -164,8 +157,7 @@ async def admin_menu_handler(message: types.Message):
         reply_markup=keyboard
     )
 
-# Хендлер для Inline-кнопок
-# ВИДАЛЕНО @F.callback_query.data.in_({"get_premium", "admin_menu", "activate_combo", "deactivate_combo", "status_info"})
+# Хендлер для Inline-кнопок (БЕЗ ДЕКОРАТОРА)
 async def inline_callback_handler(callback: types.CallbackQuery):
     """Обробляє натискання Inline-кнопок."""
     global IS_ACTIVE
@@ -230,8 +222,7 @@ async def inline_callback_handler(callback: types.CallbackQuery):
             logging.error(f"Помилка створення інвойсу: {e}")
             await callback.message.answer("❌ Сталася помилка при підключенні до платіжної системи.")
             
-# Обробка кнопки "Я сплатив"
-# ВИДАЛЕНО @F.callback_query.data.startswith("check_payment_")
+# Обробка кнопки "Я сплатив" (БЕЗ ДЕКОРАТОРА)
 async def check_payment_handler(callback: types.CallbackQuery):
     """Перевірка статусу платежу через API Crypto Bot."""
     invoice_id = callback.data.split('_')[-1]
@@ -326,7 +317,7 @@ async def main() -> None:
     bot = setup_bot()
     dp = Dispatcher()
 
-    # КОРЕКТНА РЕЄСТРАЦІЯ ХЕНДЛЕРІВ (без використання декораторів у модулі)
+    # КОРЕКТНА РЕЄСТРАЦІЯ ХЕНДЛЕРІВ
     
     # 1. Команди (Message Handlers)
     dp.message.register(command_start_handler, CommandStart())
@@ -336,11 +327,13 @@ async def main() -> None:
     dp.message.register(admin_menu_handler, Command("admin_menu"), F.from_user.id == ADMIN_ID)
 
     # 2. Обробники Callback (Inline Button Handlers)
+    # Реєстрація загальних колбеків
     dp.callback_query.register(
         inline_callback_handler, 
         F.callback_query.data.in_({"get_premium", "admin_menu", "activate_combo", "deactivate_combo", "status_info"})
     )
     
+    # Реєстрація колбека перевірки платежу
     dp.callback_query.register(
         check_payment_handler, 
         F.callback_query.data.startswith("check_payment_")
