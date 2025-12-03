@@ -1,106 +1,87 @@
 import os
 import asyncio
 import json
-from datetime import datetime, timedelta, timezone
+from datetime import datetime
 from aiogram import Bot, Dispatcher, types
 from aiogram.filters import CommandStart
 from aiogram.client.default import DefaultBotProperties
 from aiogram import F
 
 TOKEN = os.getenv("TOKEN")
-# ПРАВИЛЬНИЙ СПОСІБ ДЛЯ НОВОГО aiogram
 bot = Bot(token=TOKEN, default=DefaultBotProperties(parse_mode="HTML"))
 dp = Dispatcher()
 
-PAYMENT_LINK = "https://t.me/send?start=IVWQeJXKYVsd"  # ← твій платіжний лінк
+# Простий файл для збереження мови (всі по дефолту українська)
+LANG_FILE = "lang.json"
+PAID_FILE = "paid.txt"
 
-# Мови
-TEXTS = {
-    "uk": {"start": "Привіт! @CryptoComboDaily — всі комбо та коди в одному місці\n\nОбери мову:", "set": "Мову змінено на українську", "btn": "Сьогоднішні комбо"},
-    "ru": {"start": "Привет! @CryptoComboDaily — все комбо и коды в одном месте\n\nВыбери язык:", "set": "Язык изменён на русский", "btn": "Сьогоднішні комбо"},
-    "en": {"start": "Hey! @CryptoComboDaily — all combos & codes in one place\n\nChoose language:", "set": "Language set to English", "btn": "Today combos"}
-}
+def get_lang(user_id):
+    if os.path.exists(LANG_FILE):
+        try:
+            with open(LANG_FILE) as f:
+                data = json.load(f)
+                return data.get(str(user_id), "uk")
+        except:
+            return "uk"
+    return "uk"
 
-# lang.json
-def load_lang():
-    if os.path.exists("lang.json"):
-        with open("lang.json") as f:
-            return json.load(f)
-    return {}
-
-def save_lang(data):
-    with open("lang.json", "w") as f:
+def save_lang(user_id, lang):
+    data = {}
+    if os.path.exists(LANG_FILE):
+        try:
+            with open(LANG_FILE) as f:
+                data = json.load(f)
+        except:
+            pass
+    data[str(user_id)] = lang
+    with open(LANG_FILE, "w") as f:
         json.dump(data, f)
-
-langs = load_lang()
 
 # Клавіатури
 lang_kb = types.InlineKeyboardMarkup(inline_keyboard=[
-    [types.InlineKeyboardButton(text="English", callback_data="lang_en")],
+    [types.InlineKeyboardButton(text="Українська", callback_data="lang_uk")],
     [types.InlineKeyboardButton(text="Русский", callback_data="lang_ru")],
-    [types.InlineKeyboardButton(text="Українська", callback_data="lang_uk")]
+    [types.InlineKeyboardButton(text="English", callback_data="lang_en")]
 ])
 
-def main_kb(lang):
-    return types.ReplyKeyboardMarkup(keyboard=[[types.KeyboardButton(text=TEXTS[lang]["btn"])]], resize_keyboard=True)
+main_kb = types.ReplyKeyboardMarkup(keyboard=[
+    [types.KeyboardButton(text="Сьогоднішні комбо 🔥")]
+], resize_keyboard=True)
 
 @dp.message(CommandStart())
 async def start(message: types.Message):
-    uid = str(message.from_user.id)
-    lang = langs.get(uid, "en")
-    await message.answer(TEXTS[lang]["start"], reply_markup=lang_kb)
+    await message.answer(
+        "Привіт! @CryptoComboDaily\nВсі комбо та коди 20+ тапалок в одному місці\n\nОбери мову:",
+        reply_markup=lang_kb
+    )
 
 @dp.callback_query(F.data.startswith("lang_"))
 async def set_lang(callback: types.CallbackQuery):
     lang = callback.data.split("_")[1]
-    langs[str(callback.from_user.id)] = lang
-    save_lang(langs)
-    await callback.message.edit_text(TEXTS[lang]["set"], reply_markup=main_kb(lang))
+    save_lang(callback.from_user.id, lang)
+    await callback.message.edit_text("Мову встановлено ✅", reply_markup=main_kb)
     await callback.answer()
 
-@dp.message(F.text.regexp(r"(?i)комбо|combo"))
+@dp.message(F.text == "Сьогоднішні комбо 🔥")
 async def combos(message: types.Message):
-    uid = str(message.from_user.id)
-    lang = langs.get(uid, "en")
-    date = (datetime.now(timezone.utc) + timedelta(hours=3)).strftime("%d.%m.%Y")
-
-    text = f"<b>Комбо та коди на {date}</b>\n\n"
+    text = f"<b>Комбо та коди на {datetime.now().strftime('%d.%m.%Y')}</b>\n\n"
     text += ("Hamster Kombat → Pizza ➜ Wallet ➜ Rocket\n"
              "Blum → Cipher: FREEDOM\n"
              "Notcoin → · − · · − ·\n"
              "TapSwap → MATRIX\n"
              "CATS → MEOW2025\n"
-             "PixelTap → ⚔️➜🛡️➜Fire\n"
+             "PixelTap → ⚔️ ➜ 🛡️ ➜ 🔥\n"
              "Rocky Rabbit → 3→1→4→2\n"
              "Yescoin → ←↑→↓←\n"
              "DOGS → DOGS2025\n"
              "+ ще 12 ігор щодня…")
 
+    # Преміум
     paid = False
-    if os.path.exists("paid.txt"):
-        with open("paid.txt") as f:
-            paid = uid in f.read()
+    if os.path.exists(PAID_FILE):
+        with open(PAID_FILE) as f:
+            paid = str(message.from_user.id) in f.read()
 
     if not paid:
         kb = types.InlineKeyboardMarkup(inline_keyboard=[
-            [types.InlineKeyboardButton(text="Преміум 1$", url=PAYMENT_LINK)],
-            [types.InlineKeyboardButton(text="Я оплатив", callback_data="paid")]
-        ])
-        text += "\n\n<b>Преміум 1$</b> — ранній доступ + приватні сигнали"
-        await message.answer(text, reply_markup=kb)
-    else:
-        await message.answer(text, reply_markup=main_kb(lang))
-
-@dp.callback_query(F.data == "paid")
-async def activate(callback: types.CallbackQuery):
-    with open("paid.txt", "a") as f:
-        f.write(f"{callback.from_user.id}\n")
-    await callback.message.edit_text("Преміум активовано назавжди!")
-    await callback.answer("Готово!")
-
-async def main():
-    print("БОТ ЖИВИЙ І ПРАЦЮЄ НА 100%!")
-    await dp.start_polling(bot)
-
-if __name__ == "__main__":
-    asyncio.run(main())
+            [types.InlineKeyboardButton(text="Преміум 1$", url="https://t.me/send?start=IVWQ
