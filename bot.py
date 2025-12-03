@@ -56,7 +56,7 @@ def setup_bot():
     return Bot(token=BOT_TOKEN, default=bot_properties)
 
 # Хендлер команди /start
-@CommandStart()
+# ВИДАЛЕНО @CommandStart()
 async def command_start_handler(message: types.Message) -> None:
     """Обробляє команду /start і показує статус підписки."""
     user_id = message.from_user.id
@@ -88,7 +88,7 @@ async def command_start_handler(message: types.Message) -> None:
     await message.answer(welcome_message, reply_markup=keyboard)
 
 # Хендлер команди /combo (для отримання комбо)
-@Command("combo")
+# ВИДАЛЕНО @Command("combo")
 async def command_combo_handler(message: types.Message) -> None:
     """Обробляє команду /combo."""
     user_id = message.from_user.id
@@ -101,15 +101,15 @@ async def command_combo_handler(message: types.Message) -> None:
 *(Ранній доступ Premium)*
         
 *Hamster Kombat* \\→ Pizza \\→ Wallet \\→ Rocket
-*Blum* \\→ Cipher: FREEDOM
-*TapSwap* \\→ MATRIX
-*CATS* \\→ MEOW2025
-*Rocky Rabbit* \\→ 3\\→1\\→4\\→2
-*Yescoin* \\→ ⬆️\\→⬇️\\→⬆️
-*DOGS* \\→ DOGS2025
-*PixelTap* \\→ FIRE ✨
-*W\\-Coin* \\→ A\\→B\\→C\\→D
-*Memefi* \\→ LFG
+*Blum* \\rightarrow Cipher: FREEDOM
+*TapSwap* \\rightarrow MATRIX
+*CATS* \\rightarrow MEOW2025
+*Rocky Rabbit* \\rightarrow 3\\→1\\→4\\→2
+*Yescoin* \\rightarrow ⬆️\\→⬇️\\→⬆️
+*DOGS* \\rightarrow DOGS2025
+*PixelTap* \\rightarrow FIRE ✨
+*W\\-Coin* \\rightarrow A\\→B\\→C\\→D
+*Memefi* \\rightarrow LFG
 *DotCoin* \\rightarrow PRO
 *BountyBot* \\rightarrow BTC
 *NEAR Wallet* \\rightarrow BONUS
@@ -137,8 +137,8 @@ async def command_combo_handler(message: types.Message) -> None:
         )
 
 # Хендлер для меню адміністратора
-@Command("admin_menu")
-@F.from_user.id == ADMIN_ID
+# ВИДАЛЕНО @Command("admin_menu")
+# ВИДАЛЕНО @F.from_user.id == ADMIN_ID
 async def admin_menu_handler(message: types.Message):
     """Меню для активації/деактивації комбо (доступно лише адміністратору)."""
     global IS_ACTIVE
@@ -165,7 +165,7 @@ async def admin_menu_handler(message: types.Message):
     )
 
 # Хендлер для Inline-кнопок
-@F.callback_query.data.in_({"get_premium", "admin_menu", "activate_combo", "deactivate_combo", "status_info"})
+# ВИДАЛЕНО @F.callback_query.data.in_({"get_premium", "admin_menu", "activate_combo", "deactivate_combo", "status_info"})
 async def inline_callback_handler(callback: types.CallbackQuery):
     """Обробляє натискання Inline-кнопок."""
     global IS_ACTIVE
@@ -231,7 +231,7 @@ async def inline_callback_handler(callback: types.CallbackQuery):
             await callback.message.answer("❌ Сталася помилка при підключенні до платіжної системи.")
             
 # Обробка кнопки "Я сплатив"
-@F.callback_query.data.startswith("check_payment_")
+# ВИДАЛЕНО @F.callback_query.data.startswith("check_payment_")
 async def check_payment_handler(callback: types.CallbackQuery):
     """Перевірка статусу платежу через API Crypto Bot."""
     invoice_id = callback.data.split('_')[-1]
@@ -322,17 +322,28 @@ async def check_invoice_status(invoice_id: str):
 # --- Запуск бота ---
 
 async def main() -> None:
-    """Головна функція запуску бота."""
+    """Головна функція запуску бота. Тут відбувається коректна реєстрація хендлерів."""
     bot = setup_bot()
     dp = Dispatcher()
 
-    # Реєстрація всіх хендлерів
-    dp.include_routers(
-        dp.message.register(command_start_handler, CommandStart()),
-        dp.message.register(command_combo_handler, Command("combo")),
-        dp.message.register(admin_menu_handler, Command("admin_menu")),
-        dp.callback_query.register(inline_callback_handler, F.callback_query.data.in_({"get_premium", "admin_menu", "activate_combo", "deactivate_combo", "status_info"})),
-        dp.callback_query.register(check_payment_handler, F.callback_query.data.startswith("check_payment_"))
+    # КОРЕКТНА РЕЄСТРАЦІЯ ХЕНДЛЕРІВ (без використання декораторів у модулі)
+    
+    # 1. Команди (Message Handlers)
+    dp.message.register(command_start_handler, CommandStart())
+    dp.message.register(command_combo_handler, Command("combo"))
+    
+    # Реєстрація адмін-меню тільки для ADMIN_ID
+    dp.message.register(admin_menu_handler, Command("admin_menu"), F.from_user.id == ADMIN_ID)
+
+    # 2. Обробники Callback (Inline Button Handlers)
+    dp.callback_query.register(
+        inline_callback_handler, 
+        F.callback_query.data.in_({"get_premium", "admin_menu", "activate_combo", "deactivate_combo", "status_info"})
+    )
+    
+    dp.callback_query.register(
+        check_payment_handler, 
+        F.callback_query.data.startswith("check_payment_")
     )
 
     logging.info("Бот запущено. Починаю отримувати оновлення...")
