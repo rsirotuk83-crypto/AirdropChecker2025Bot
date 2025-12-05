@@ -4,7 +4,7 @@ import os
 import time 
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.enums import ParseMode
-from aiogram.filters import CommandStart
+from aiogram.filters import CommandStart, Command
 from aiogram.client.default import DefaultBotProperties
 from aiogram.exceptions import TelegramBadRequest
 
@@ -46,8 +46,15 @@ def get_combo_text(is_admin: bool) -> str:
     """Формує текст комбо на основі його статусу та знайдених карток."""
     
     # Читання даних з імпортованого модуля скрапера
-    cards = hamster_scraper.GLOBAL_COMBO_CARDS
-    
+    # Якщо тут виникає AttributeError, це 100% означає, що hamster_scraper.py — СТАРИЙ
+    try:
+        cards = hamster_scraper.GLOBAL_COMBO_CARDS
+    except AttributeError:
+        # Обробка помилки на випадок, якщо файл hamster_scraper.py старий
+        logger.error("Критична помилка: Не знайдено hamster_scraper.GLOBAL_COMBO_CARDS. Перевірте файл скрапера.")
+        return "❌ \\*Критична Помилка\\*\\! Змінна `GLOBAL_COMBO_CARDS` відсутня\\! Адміністратор: Оновіть файл `hamster_scraper\\.py`\\."
+
+
     # 1. If hidden
     if not GLOBAL_COMBO_ACTIVE and not is_admin:
         return "❌ \\*Глобальна Активність: НЕАКТИВНО\\*\n\nКомбо тимчасово приховано адміністратором\\."
@@ -143,6 +150,44 @@ async def command_start_handler(message: types.Message) -> None:
         logger.error(f"Помилка відправки повідомлення /start: {e}")
         await message.answer("Помилка форматування. Будь ласка, спробуйте ще раз.")
 
+@dp.message(Command("debug_scraper"))
+async def command_debug_scraper_handler(message: types.Message) -> None:
+    """(Тільки для адміністратора) Виводить вміст модуля hamster_scraper."""
+    user_id = message.from_user.id
+    if str(user_id) != ADMIN_ID:
+        await message.reply("Доступ заборонено\\.")
+        return
+        
+    # Отримуємо всі атрибути модуля
+    attributes = dir(hamster_scraper)
+    
+    # Фільтруємо приватні атрибути та ті, які ми шукаємо
+    relevant_attributes = [
+        attr for attr in attributes if not attr.startswith('__') and 
+        ('main_scheduler' in attr or 'GLOBAL_COMBO_CARDS' in attr or 'scrape' in attr)
+    ]
+    
+    # Форматуємо висновок для MarkdownV2
+    attributes_list = "\n".join([f"• `{attr}`" for attr in relevant_attributes])
+    
+    debug_text = (
+        f"🔬 \\*Діагностика модуля `hamster_scraper`\\*\n\n"
+        f"Шукані атрибути: `main_scheduler`, `GLOBAL_COMBO_CARDS`\\.\n\n"
+        f"\\*Знайдені атрибути:\\*\n"
+        f"{attributes_list}"
+    )
+    
+    if 'main_scheduler' in relevant_attributes and 'GLOBAL_COMBO_CARDS' in relevant_attributes:
+        debug_text += "\n\n✅ \\*ВИЯВЛЕНО УСПІХ\\*\\! Обидва критичні атрибути присутні\\."
+    else:
+        debug_text += "\n\n❌ \\*КРИТИЧНА НЕСПРАВНІСТЬ\\*\\! Один або обидва критичні атрибути відсутні\\."
+
+    try:
+        await message.answer(debug_text)
+    except TelegramBadRequest as e:
+        logger.error(f"Помилка відправки debug-повідомлення: {e}")
+        await message.answer("Помилка форматування debug-повідомлення\\.")
+
 
 # --- ХЕНДЛЕРИ CALLBACKS (КНОПКИ) ---
 
@@ -152,7 +197,7 @@ async def process_get_combo(callback_query: types.CallbackQuery, bot: Bot):
     user_id = callback_query.from_user.id
     is_admin = str(user_id) == ADMIN_ID
     
-    # Ця функція викликає hamster_scraper.GLOBAL_COMBO_CARDS
+    # Ця функція тепер містить try/except для AttributeError
     combo_text = get_combo_text(is_admin) 
     
     # Створюємо кнопку "Назад" або кнопку для адміністратора
@@ -286,19 +331,20 @@ async def process_force_scrape(callback_query: types.CallbackQuery, bot: Bot):
         await callback_query.answer("Доступ заборонено!")
         return
         
-    # Відповідь користувачу про початок процесу
     await callback_query.answer("Починаю примусовий скрапінг... Зачекайте 10-20 секунд.")
     
-    # Виконуємо синхронну функцію скрапінгу у окремому потоці, щоб не блокувати aiogram
     try:
-        # Ми просто викликаємо функцію скрапінгу, яка оновлює GLOBAL_COMBO_CARDS напряму
-        # При цьому ми НЕ чекаємо на 3-годинний цикл, а лише на виконання _scrape_for_combo()
-        # Для цього ми створимо тимчасову асинхронну обгортку:
+        # Спроба викликати потрібну функцію (якщо вона є)
         await asyncio.to_thread(hamster_scraper._scrape_for_combo)
         
         # Після скрапінгу оновлюємо повідомлення з новим комбо
         await process_get_combo(callback_query, bot)
 
+    except AttributeError:
+        # Якщо _scrape_for_combo не знайдено, це означає, що файл hamster_scraper.py — СТАРИЙ
+        logger.error("Критична помилка: Не знайдено hamster_scraper._scrape_for_combo. Перевірте файл скрапера.")
+        await bot.send_message(user_id, "❌ Критична помилка: Не вдалося запустити скрапінг. Файл `hamster_scraper.py` неактуальний.")
+        
     except Exception as e:
         logger.error(f"Помилка примусового скрапінгу: {e}")
         await bot.send_message(user_id, "❌ Критична помилка під час скрапінгу. Дивіться логи.")
@@ -311,9 +357,9 @@ async def start_scheduler_task():
     logger.info("Запуск планувальника скрапінгу у фоновому режимі...")
     try:
         # Виклик асинхронної функції main_scheduler з модуля hamster_scraper
+        # Якщо тут виникає AttributeError, це 100% означає, що hamster_scraper.py — СТАРИЙ
         await hamster_scraper.main_scheduler()
     except AttributeError as e:
-        # Якщо файл hamster_scraper.py не було знайдено або він неправильний
         logger.error(f"Критична помилка запуску скрапера: {e}. Переконайтеся, що hamster_scraper.py існує і містить main_scheduler().")
     except Exception as e:
         logger.error(f"Неочікувана помилка в планувальнику скрапінгу: {e}")
@@ -329,6 +375,7 @@ async def main() -> None:
 
 if __name__ == "__main__":
     try:
+        # У Railway це викликається автоматично. Тут лише для локального тестування.
         asyncio.run(main())
     except KeyboardInterrupt:
         logger.info("Бот зупинено вручну.")
