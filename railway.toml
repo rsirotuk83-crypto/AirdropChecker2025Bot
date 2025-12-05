@@ -1,10 +1,10 @@
 [build]
-  builder = "dockerfile"
+# Використовуємо Dockerfile для збірки
+builder = "dockerfile"
 
-[deploy]
-  startCommand = "python bot.py"
-
-[[volumes]]
-  # Це створить постійне сховище і примонтує його в /app/data
-  mountPath = "/app/data"
-  # Railway сам створить Volume, навіть якщо його не видно в UI
+# Налаштування Volume для збереження даних
+[[deploy.volumes]]
+# Шлях у контейнері, куди буде монтуватися диск (має відповідати DATA_DIR = "/app/data" у bot.py)
+mountPath = "/app/data"
+# Назва диска, яку створить Railway
+name = "bot_data_volume"
