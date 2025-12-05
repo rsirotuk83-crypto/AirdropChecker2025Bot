@@ -1,0 +1,10 @@
+[build]
+  builder = "dockerfile"
+
+[deploy]
+  startCommand = "python bot.py"
+
+[[volumes]]
+  # Це створить постійне сховище і примонтує його в /app/data
+  mountPath = "/app/data"
+  # Railway сам створить Volume, навіть якщо його не видно в UI
