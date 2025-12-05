@@ -29,7 +29,8 @@ def create_bot_instance(token: str) -> Bot:
 
     default_properties = DefaultBotProperties(
         parse_mode=ParseMode.MARKDOWN_V2, # Рекомендується для Telegram
-        disable_web_page_preview=True,    # Запобігає автоматичному відображенню посилань
+        # --- ВИПРАВЛЕННЯ: використовуємо link_preview_is_disabled замість disable_web_page_preview ---
+        link_preview_is_disabled=True,    # Запобігає автоматичному відображенню посилань
         protect_content=False
     )
     return Bot(token=token, default=default_properties)
@@ -82,7 +83,7 @@ async def command_start_handler(message: types.Message) -> None:
     await message.answer(text, reply_markup=keyboard)
 
 
-# --- ХЕНДЛЕР ДЛЯ КНОПОК ТА ІНШИХ КОМАНД (ПРИКЛАД) ---
+# --- ХЕНДЛЕРИ ДЛЯ КНОПОК ТА ІНШИХ КОМАНД (ПРИКЛАД) ---
 
 @dp.callback_query(F.data == "get_combo")
 async def process_get_combo(callback: types.CallbackQuery):
