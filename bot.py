@@ -8,7 +8,7 @@ from datetime import datetime
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import CommandStart
 from aiogram.client.default import DefaultBotProperties
-from aiogram.exceptions import TelegramBadRequest # Додано для обробки помилок редагування
+from aiogram.exceptions import TelegramBadRequest, TelegramConflictError # Додано ConflictError
 
 # --- Налаштування Логування ---
 logging.basicConfig(level=logging.INFO,
@@ -17,9 +17,12 @@ logging.basicConfig(level=logging.INFO,
 # --- Змінні Оточення ---
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 try:
+    # Перевірка ADMIN_ID
     ADMIN_ID = int(os.getenv("ADMIN_ID"))
+    if ADMIN_ID == 0:
+         logging.warning("ADMIN_ID встановлено як 0. Адмін-функції можуть не працювати коректно.")
 except (ValueError, TypeError):
-    logging.error("КРИТИЧНА ПОМИЛКА: Змінна оточення ADMIN_ID не встановлена або некоректна. Адмін-функції вимкнено.")
+    logging.error("КРИТИЧНА ПОМИЛКА: ADMIN_ID не встановлено або некоректне. Адмін-функції вимкнено.")
     ADMIN_ID = 0
 
 bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode="HTML"))
@@ -28,11 +31,7 @@ dp = Dispatcher()
 # --- Налаштування Постійного Сховища ---
 DATA_DIR = "/app/data"
 DB_PATH = os.path.join(DATA_DIR, "db.json")
-
-try:
-    os.makedirs(DATA_DIR, exist_ok=True)
-except Exception as e:
-    logging.error(f"Помилка створення директорії {DATA_DIR}: {e}")
+os.makedirs(DATA_DIR, exist_ok=True) # Забезпечуємо існування директорії
 
 subs = {}
 active = False
@@ -85,13 +84,13 @@ async def fetch():
     try:
         async with httpx.AsyncClient() as c:
             r = await c.get(source_url, timeout=15)
-            r.raise_for_status() # Викликає виняток для кодів 4xx/5xx
+            r.raise_for_status()
             
             new_combo_text = r.text.strip()
             if new_combo_text != combo_text:
                 combo_text = new_combo_text
                 save()
-                await bot.send_message(ADMIN_ID, "✅ Комбо оновлено автоматично!")
+                if ADMIN_ID != 0: await bot.send_message(ADMIN_ID, "✅ Комбо оновлено автоматично!")
                 logging.info("Комбо оновлено.")
             else:
                 logging.info("Комбо не потребує оновлення.")
@@ -107,9 +106,8 @@ async def fetch():
 
 async def scheduler():
     """Планувальник для запуску оновлення."""
-    # Чекаємо 30 секунд, щоб бот встиг повністю завантажитися і видалити WebHook
     await asyncio.sleep(30) 
-    await fetch() # Перше оновлення
+    await fetch()
     while True:
         await asyncio.sleep(24 * 3600)
         await fetch()
@@ -142,9 +140,8 @@ async def get_combo(c: types.CallbackQuery):
         t = f"<b>Комбо на {datetime.now():%d.%m.%Y}</b>\n\n{combo_text}"
         
         try:
-            # Редагуємо повідомлення, щоб оновити дату та уникнути повторного натискання
             await c.message.edit_text(t, parse_mode="HTML", reply_markup=c.message.reply_markup)
-            await c.answer() # Закриваємо сповіщення
+            await c.answer()
         except TelegramBadRequest as e:
             if "message is not modified" in str(e):
                 await c.answer("Комбо вже відображено.", show_alert=False)
@@ -190,7 +187,6 @@ async def admin_actions(c: types.CallbackQuery):
     if c.data == "force":
         await c.answer("Розпочато примусове оновлення...")
         await fetch() 
-        # Оновлюємо панель, щоб показати, що дія виконана
         await admin_panel(c)
         
     elif c.data == "toggle_active":
@@ -245,24 +241,33 @@ async def setcombo(m: types.Message):
 
 async def main():
     """Головна функція запуску бота."""
+    
+    # !!! КРОК 1: ПЕРЕВІРКА ТА ВИДАЛЕННЯ WEBHOOK !!! 
+    # Це гарантує, що жоден WebHook не конфліктує з Polling.
+    try:
+        logging.info("Спроба видалення WebHook та очищення оновлень...")
+        # drop_pending_updates=True гарантує, що бот почне приймати нові оновлення
+        await bot.delete_webhook(drop_pending_updates=True) 
+        logging.info("WebHook успішно видалено. Система готова до Polling.")
+    except Exception as e:
+        # Це нормально, якщо WebHook не був встановлений
+        logging.warning(f"Помилка при видаленні WebHook (може бути нормально): {e}")
+
+    # !!! КРОК 2: ПЕРЕВІРТЕ ЛОКАЛЬНИЙ КОНФЛІКТ !!!
+    # Якщо ви запускаєте бота десь ще (наприклад, на своєму ПК), ЗУПИНІТЬ ТОЙ ПРОЦЕС.
+    
     logging.info("БОТ ЗАПУЩЕНО — Створюємо планувальник і починаємо Polling.")
     
-    # !!! КРИТИЧНО ВАЖЛИВО !!! Видалення WebHook для коректної роботи Polling
-    try:
-        logging.info("Спроба видалення WebHook...")
-        await bot.delete_webhook(drop_pending_updates=True)
-        logging.info("WebHook успішно видалено.")
-    except Exception as e:
-        logging.warning(f"Не вдалося видалити WebHook: {e}. Це може бути нормально, якщо його не було.")
-
-    # Створюємо завдання планувальника, щоб воно працювало паралельно з ботом
     asyncio.create_task(scheduler())
     
+    # Після видалення WebHook Polling має працювати без конфліктів
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
     try:
         asyncio.run(main())
+    except TelegramConflictError:
+        logging.critical("Критична помилка: Конфлікт Polling. Переконайтеся, що запущено лише 1 екземпляр!")
     except KeyboardInterrupt:
         logging.info("Бот зупинено вручну.")
     except Exception as e:
