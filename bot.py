@@ -8,7 +8,7 @@ from datetime import datetime
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import CommandStart
 from aiogram.client.default import DefaultBotProperties
-from aiogram.exceptions import TelegramBadRequest, TelegramConflictError # Додано ConflictError
+from aiogram.exceptions import TelegramBadRequest, TelegramConflictError
 
 # --- Налаштування Логування ---
 logging.basicConfig(level=logging.INFO,
@@ -17,10 +17,7 @@ logging.basicConfig(level=logging.INFO,
 # --- Змінні Оточення ---
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 try:
-    # Перевірка ADMIN_ID
     ADMIN_ID = int(os.getenv("ADMIN_ID"))
-    if ADMIN_ID == 0:
-         logging.warning("ADMIN_ID встановлено як 0. Адмін-функції можуть не працювати коректно.")
 except (ValueError, TypeError):
     logging.error("КРИТИЧНА ПОМИЛКА: ADMIN_ID не встановлено або некоректне. Адмін-функції вимкнено.")
     ADMIN_ID = 0
@@ -29,9 +26,10 @@ bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode="HTML"))
 dp = Dispatcher()
 
 # --- Налаштування Постійного Сховища ---
-DATA_DIR = "/app/data"
+# Шлях до директорії, яка монтується на Volume Railway
+DATA_DIR = "/app/data" 
 DB_PATH = os.path.join(DATA_DIR, "db.json")
-os.makedirs(DATA_DIR, exist_ok=True) # Забезпечуємо існування директорії
+os.makedirs(DATA_DIR, exist_ok=True) 
 
 subs = {}
 active = False
@@ -45,13 +43,14 @@ def load():
         try:
             with open(DB_PATH, "r", encoding="utf-8") as f:
                 d = json.load(f)
-                subs = {int(k): v for k, v in d.get("subs", {}).items()}
+                # Перетворюємо ключі (id користувачів) на цілі числа
+                subs = {int(k): v for k, v in d.get("subs", {}).items()} 
                 active = d.get("active", False)
                 combo_text = d.get("combo", combo_text)
                 source_url = d.get("url", "")
             logging.info(f"Дані завантажено. Активність: {active}, Преміум-користувачів: {len(subs)}")
-        except json.JSONDecodeError:
-            logging.warning("Файл db.json порожній або пошкоджений. Створюємо новий.")
+        except (json.JSONDecodeError, FileNotFoundError):
+            logging.warning("Файл db.json не знайдено або пошкоджений. Створюємо новий.")
             save()
         except Exception as e:
             logging.error(f"Помилка завантаження db.json: {e}")
@@ -105,14 +104,24 @@ async def fetch():
         if ADMIN_ID != 0: await bot.send_message(ADMIN_ID, error_msg)
 
 async def scheduler():
-    """Планувальник для запуску оновлення."""
-    await asyncio.sleep(30) 
+    """Планувальник для запуску оновлення (раз на добу)."""
+    await asyncio.sleep(30) # Перший запуск через 30 секунд
     await fetch()
     while True:
-        await asyncio.sleep(24 * 3600)
+        await asyncio.sleep(24 * 3600) # Чекаємо 24 години
         await fetch()
 
 # --- ХЕНДЛЕРИ ---
+
+def get_start_keyboard(is_admin: bool):
+    """Створює клавіатуру для команди /start."""
+    kb = [[types.InlineKeyboardButton(text="Отримати комбо", callback_data="combo")]]
+    
+    if is_admin:
+        kb.append([types.InlineKeyboardButton(text="⚙️ Адмінка", callback_data="admin")])
+        
+    return types.InlineKeyboardMarkup(inline_keyboard=kb)
+
 
 @dp.message(CommandStart())
 async def start(m: types.Message):
@@ -120,27 +129,25 @@ async def start(m: types.Message):
     uid = m.from_user.id
     logging.info(f"Отримано /start від користувача {uid}")
     
-    kb = [[types.InlineKeyboardButton(text="Отримати комбо", callback_data="combo")]]
-    
-    if uid == ADMIN_ID:
-        kb.append([types.InlineKeyboardButton(text="⚙️ Адмінка", callback_data="admin")])
+    kb = get_start_keyboard(uid == ADMIN_ID)
         
-    text = f"Привіт, {m.from_user.full_name}!\n\nЛаскаво просимо до @CryptoComboDaily.\nНатисни кнопку нижче:"
+    text = f"Привіт, {m.from_user.full_name}!\n\nЛаскаво просимо.\nНатисни кнопку нижче:"
     
-    await m.answer(text, reply_markup=types.InlineKeyboardMarkup(inline_keyboard=kb))
+    await m.answer(text, reply_markup=kb)
 
 
 @dp.callback_query(F.data == "combo")
 async def get_combo(c: types.CallbackQuery):
     """Обробник натискання кнопки 'Отримати комбо'."""
     uid = c.from_user.id
-    logging.info(f"Отримано callback 'combo' від користувача {uid}. Активно: {active}, Premium: {uid in subs}")
     
     if uid == ADMIN_ID or active or uid in subs:
         t = f"<b>Комбо на {datetime.now():%d.%m.%Y}</b>\n\n{combo_text}"
         
         try:
-            await c.message.edit_text(t, parse_mode="HTML", reply_markup=c.message.reply_markup)
+            # Використовуємо стару клавіатуру, щоб була можливість повернутися на /start
+            kb = get_start_keyboard(uid == ADMIN_ID) 
+            await c.message.edit_text(t, parse_mode="HTML", reply_markup=kb)
             await c.answer()
         except TelegramBadRequest as e:
             if "message is not modified" in str(e):
@@ -152,21 +159,15 @@ async def get_combo(c: types.CallbackQuery):
     else:
         await c.answer("❌ Тільки для преміум-користувачів.", show_alert=True)
 
-@dp.callback_query(F.data == "admin")
-async def admin_panel(c: types.CallbackQuery):
-    """Обробник панелі адміністратора."""
-    if c.from_user.id != ADMIN_ID:
-        await c.answer("Недостатньо прав.")
-        return
-        
-    logging.info(f"Адміністратор {c.from_user.id} відкрив панель.")
-    
+
+async def send_admin_panel(c: types.CallbackQuery):
+    """Спільна функція для відображення адмін-панелі."""
     status = "АКТИВНО ✅" if active else "НЕАКТИВНО ❌"
     
     kb = [
         [types.InlineKeyboardButton(text="Оновити зараз (fetch)", callback_data="force")],
         [types.InlineKeyboardButton(text=f"Глобальне Комбо: {status}", callback_data="toggle_active")],
-        [types.InlineKeyboardButton(text="Повернутися", callback_data="back_to_start")]
+        [types.InlineKeyboardButton(text="Назад до /start", callback_data="back_to_start")]
     ]
     
     await c.message.edit_text(
@@ -176,33 +177,53 @@ async def admin_panel(c: types.CallbackQuery):
     )
     await c.answer()
 
+@dp.callback_query(F.data == "admin")
+async def admin_panel_handler(c: types.CallbackQuery):
+    """Обробник входу в панель адміністратора."""
+    if c.from_user.id != ADMIN_ID:
+        await c.answer("Недостатньо прав.")
+        return
+    await send_admin_panel(c)
 
-@dp.callback_query(F.data.in_({"force", "toggle_active", "back_to_start"}))
-async def admin_actions(c: types.CallbackQuery):
-    """Обробник дій адміністратора."""
+
+@dp.callback_query(F.data == "force")
+async def admin_force_fetch(c: types.CallbackQuery):
+    """Обробник примусового оновлення."""
+    if c.from_user.id != ADMIN_ID: return
+    await c.answer("Розпочато примусове оновлення...")
+    await fetch() 
+    await send_admin_panel(c)
+
+@dp.callback_query(F.data == "toggle_active")
+async def admin_toggle_active(c: types.CallbackQuery):
+    """Обробник перемикання глобальної активності."""
+    if c.from_user.id != ADMIN_ID: return
+    global active
+    active = not active
+    save()
+    await send_admin_panel(c)
+    
+@dp.callback_query(F.data == "back_to_start")
+async def admin_back_to_start(c: types.CallbackQuery):
+    """Обробник повернення на /start."""
     if c.from_user.id != ADMIN_ID: return
     
-    logging.info(f"Адмін-дія: {c.data}")
+    # Використовуємо edit_text, щоб повернути повідомлення до стану /start
+    text = f"Привіт, {c.from_user.full_name}!\n\nЛаскаво просимо.\nНатисни кнопку нижче:"
+    kb = get_start_keyboard(True) # Адмін завжди true тут
     
-    if c.data == "force":
-        await c.answer("Розпочато примусове оновлення...")
-        await fetch() 
-        await admin_panel(c)
-        
-    elif c.data == "toggle_active":
-        global active
-        active = not active
-        save()
-        await admin_panel(c)
-        
-    elif c.data == "back_to_start":
-        await c.answer()
-        # Створюємо фейкове повідомлення, щоб запустити start
-        fake_message = types.Message(message_id=c.message.message_id, date=datetime.now(), chat=c.message.chat, text="/start")
-        await start(fake_message)
-
-
-# --- Адмін-команди ---
+    try:
+        await c.message.edit_text(text, reply_markup=kb)
+        await c.answer("Повернення до головного меню.", show_alert=False)
+    except TelegramBadRequest as e:
+        if "message is not modified" in str(e):
+             await c.answer("Ви вже в головному меню.", show_alert=False)
+        else:
+            logging.error(f"Помилка повернення: {e}")
+            await c.answer("Помилка повернення до меню.", show_alert=True)
+            
+            
+# --- Адмін-команди для /seturl та /setcombo ---
 
 @dp.message(F.text.startswith("/seturl"))
 async def seturl(m: types.Message):
@@ -226,41 +247,38 @@ async def setcombo(m: types.Message):
     """Команда для ручного встановлення комбо-тексту."""
     if m.from_user.id != ADMIN_ID: return
     
-    global combo_text
-    combo_text = m.text.partition(" ")[2].strip()
+    combo_text_input = m.text.partition(" ")[2].strip()
     
-    if not combo_text:
+    if not combo_text_input:
         await m.answer("Використання: /setcombo Новий текст комбо...")
         return
         
+    global combo_text
+    combo_text = combo_text_input
     save()
     await m.answer(f"Комбо збережено:\n{combo_text}")
 
 
-# --- Запуск ---
+# --- Головний Запуск (КЛЮЧОВЕ ВИПРАВЛЕННЯ КОНФЛІКТУ) ---
 
 async def main():
     """Головна функція запуску бота."""
     
-    # !!! КРОК 1: ПЕРЕВІРКА ТА ВИДАЛЕННЯ WEBHOOK !!! 
-    # Це гарантує, що жоден WebHook не конфліктує з Polling.
+    # !!! ВИПРАВЛЕННЯ КОНФЛІКТУ: ВИДАЛЯЄМО WEBHOOK, щоб Polling працював !!! 
     try:
         logging.info("Спроба видалення WebHook та очищення оновлень...")
         # drop_pending_updates=True гарантує, що бот почне приймати нові оновлення
         await bot.delete_webhook(drop_pending_updates=True) 
         logging.info("WebHook успішно видалено. Система готова до Polling.")
     except Exception as e:
-        # Це нормально, якщо WebHook не був встановлений
-        logging.warning(f"Помилка при видаленні WebHook (може бути нормально): {e}")
+        logging.warning(f"Помилка при видаленні WebHook (це нормально, якщо його не було): {e}")
 
-    # !!! КРОК 2: ПЕРЕВІРТЕ ЛОКАЛЬНИЙ КОНФЛІКТ !!!
-    # Якщо ви запускаєте бота десь ще (наприклад, на своєму ПК), ЗУПИНІТЬ ТОЙ ПРОЦЕС.
-    
     logging.info("БОТ ЗАПУЩЕНО — Створюємо планувальник і починаємо Polling.")
     
+    # Запускаємо планувальник для періодичного оновлення комбо
     asyncio.create_task(scheduler())
     
-    # Після видалення WebHook Polling має працювати без конфліктів
+    # Починаємо Polling
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
