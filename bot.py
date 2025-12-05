@@ -71,61 +71,60 @@ async def scheduler():
 @dp.message(CommandStart())
 async def start(m: types.Message):
     uid = m.from_user.id
-    kb = [[types.InlineKeyboardButton(text="Отримати комбо", callback_data="show")]]
+    kb = [[types.InlineKeyboardButton(text="Отримати комбо", callback_data="combo")]]
     if uid == ADMIN_ID:
         kb.append([types.InlineKeyboardButton(text="Адмінка", callback_data="admin")])
     await m.answer("Привіт! @CryptoComboDaily\nНатисни кнопку:", reply_markup=types.InlineKeyboardMarkup(inline_keyboard=kb))
 
-# КРИТИЧНО: правильна реєстрація callback'ів
-@dp.callback_query(F.data == "show")
-async def show_combo(c: types.CallbackQuery):
+# КЛЮЧОВЕ ВИПРАВЛЕННЯ — один універсальний callback-хендлер
+@dp.callback_query()
+async def all_callbacks(c: types.CallbackQuery):
     uid = c.from_user.id
-    if uid == ADMIN_ID or active or uid in subs:
-        t = f"<b>Комбо на {datetime.now():%d.%m.%Y}</b>\n\n{combo_text}"
-        await c.message.edit_text(t, parse_mode="HTML")
-    else:
-        await c.answer("Тільки для преміум", show_alert=True)
 
-@dp.callback_query(F.data == "admin")
-async def admin_panel(c: types.CallbackQuery):
-    if c.from_user.id != ADMIN_ID: return
-    kb = [
-        [types.InlineKeyboardButton(text="Оновити зараз", callback_data="force")],
-        [types.InlineKeyboardButton(text="Увімкнути для всіх", callback_data="on")],
-        [types.InlineKeyboardButton(text="Вимкнути", callback_data="off")]
-    ]
-    await c.message.edit_text("Адмінка", reply_markup=types.InlineKeyboardMarkup(inline_keyboard=kb))
+    if c.data == "combo":
+        if uid == ADMIN_ID or active or uid in subs:
+            t = f"<b>Комбо на {datetime.now():%d.%m.%Y}</b>\n\n{combo_text}"
+            await c.message.edit_text(t, parse_mode="HTML")
+        else:
+            await c.answer("Тільки для преміум", show_alert=True)
 
-@dp.callback_query(F.data.in_({"force", "on", "off"}))
-async def admin_actions(c: types.CallbackQuery):
-    if c.from_user.id != ADMIN_ID: return
-    if c.data == "force":
+    elif c.data == "admin" and uid == ADMIN_ID:
+        kb = [
+            [types.InlineKeyboardButton(text="Оновити зараз", callback_data="force")],
+            [types.InlineKeyboardButton(text="Увімкнути для всіх", callback_data="on")],
+            [types.InlineKeyboardButton(text="Вимкнути", callback_data="off")]
+        ]
+        await c.message.edit_text("Адмінка", reply_markup=types.InlineKeyboardMarkup(inline_keyboard=kb))
+
+    elif c.data == "force" and uid == ADMIN_ID:
         await fetch()
         await c.answer("Оновлено!")
-    elif c.data == "on":
+
+    elif c.data == "on" and uid == ADMIN_ID:
         global active
         active = True
         save()
-        await c.answer("Увімкнено")
-    elif c.data == "off":
+        await c.answer("Увімкнено для всіх")
+
+    elif c.data == "off" and uid == ADMIN_ID:
         global active
         active = False
         save()
         await c.answer("Вимкнено")
 
-# команди
-@dp.message(Command("seturl"))
+# адмін-команди
+@dp.message(F.text.startswith("/seturl"))
 async def seturl(m: types.Message):
     if m.from_user.id != ADMIN_ID: return
     try:
         global source_url
-        source_url = m.text.split()[1]
+        source_url = m.text.split(maxsplit=1)[1]
         save()
         await m.answer(f"URL збережено:\n{source_url}")
     except:
         await m.answer("Використання: /seturl https://...")
 
-@dp.message(Command("setcombo"))
+@dp.message(F.text.startswith("/setcombo"))
 async def setcombo(m: types.Message):
     if m.from_user.id != ADMIN_ID: return
     global combo_text
