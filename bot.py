@@ -6,7 +6,7 @@ import httpx
 from datetime import datetime
 
 from aiogram import Bot, Dispatcher, types, F
-from aiogram.filters import Command, CommandStart
+from aiogram.filters import CommandStart
 from aiogram.client.default import DefaultBotProperties
 
 logging.basicConfig(level=logging.INFO)
@@ -24,11 +24,10 @@ os.makedirs(DATA_DIR, exist_ok=True)
 
 subs = {}
 active = False
-combo_text = "Комбо ще не встановлено.\nАдмін, надішли /setcombo <текст>"
+combo_text = "Комбо ще не встановлено"
 source_url = ""
 
-# ПЕРСИСТЕНТНІСТЬ
-def load_persistent_state():
+def load():
     global subs, active, combo_text, source_url
     if os.path.exists(DB_PATH):
         try:
@@ -38,41 +37,34 @@ def load_persistent_state():
                 active = d.get("active", False)
                 combo_text = d.get("combo", combo_text)
                 source_url = d.get("url", "")
-            logging.info("Дані завантажено з Volume")
-        except Exception as e:
-            logging.error(f"Помилка читання: {e}")
+        except: pass
 
-def save_persistent_state():
+def save():
     data = {"subs": subs, "active": active, "combo": combo_text, "url": source_url}
-    try:
-        with open(DB_PATH, "w", encoding="utf-8") as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
-    except Exception as e:
-        logging.error(f"Помилка збереження: {e}")
+    with open(DB_PATH, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
 
-load_persistent_state()  # ← обов'язковий виклик на старті
+load()
 
-# АВТООНОВЛЕННЯ
+# Автооновлення
 async def fetch():
     global combo_text
     if not source_url: return
     try:
-        async with httpx.AsyncClient(timeout=15) as c:
-            r = await c.get(source_url)
-            if r.status_code == 200:
-                new = r.text.strip()
-                if new != combo_text:
-                    combo_text = new
-                    save_persistent_state()
-                    await bot.send_message(ADMIN_ID, "Комбо автоматично оновлено!")
+        async with httpx.AsyncClient() as c:
+            r = await c.get(source_url, timeout=15)
+            if r.status_code == 200 and r.text.strip() != combo_text:
+                combo_text = r.text.strip()
+                save()
+                await bot.send_message(ADMIN_ID, "Комбо оновлено автоматично!")
     except Exception as e:
-        await bot.send_message(ADMIN_ID, f"Помилка автооновлення:\n{e}")
+        await bot.send_message(ADMIN_ID, f"Помилка: {e}")
 
 async def scheduler():
     await asyncio.sleep(30)
     while True:
         await fetch()
-        await asyncio.sleep(24 * 3600)
+        await asyncio.sleep(24*3600)
 
 # ХЕНДЛЕРИ
 @dp.message(CommandStart())
@@ -81,8 +73,9 @@ async def start(m: types.Message):
     kb = [[types.InlineKeyboardButton(text="Отримати комбо", callback_data="combo")]]
     if uid == ADMIN_ID:
         kb.append([types.InlineKeyboardButton(text="Адмінка", callback_data="admin")])
-    await m.answer("Привіт! Натисни кнопку:", reply_markup=types.InlineKeyboardMarkup(inline_keyboard=kb))
+    await m.answer("Привіт! @CryptoComboDaily\nНатисни кнопку:", reply_markup=types.InlineKeyboardMarkup(inline_keyboard=kb))
 
+# ВАЖЛИВО: правильна реєстрація callback'ів
 @dp.callback_query(F.data == "combo")
 async def get_combo(c: types.CallbackQuery):
     uid = c.from_user.id
@@ -92,32 +85,58 @@ async def get_combo(c: types.CallbackQuery):
     else:
         await c.answer("Тільки для преміум", show_alert=True)
 
-# адмінські команди
+@dp.callback_query(F.data == "admin")
+async def admin_panel(c: types.CallbackQuery):
+    if c.from_user.id != ADMIN_ID:
+        return
+    kb = [
+        [types.InlineKeyboardButton(text="Оновити зараз", callback_data="force")],
+        [types.InlineKeyboardButton(text="Активувати для всіх", callback_data="on")],
+        [types.InlineKeyboardButton(text="Деактивувати", callback_data="off")]
+    ]
+    await c.message.edit_text("Адмінка", reply_markup=types.InlineKeyboardMarkup(inline_keyboard=kb))
+
+@dp.callback_query(F.data.in_({"force", "on", "off"}))
+async def admin_actions(c: types.CallbackQuery):
+    if c.from_user.id != ADMIN_ID: return
+    if c.data == "force":
+        await fetch()
+        await c.answer("Оновлено")
+    elif c.data == "on":
+        global active
+        active = True
+        save()
+        await c.answer("Увімкнено для всіх")
+    elif c.data == "off":
+        global active
+        active = False
+        save()
+        await c.answer("Вимкнено")
+
+# адмін-команди
 @dp.message(Command("seturl"))
 async def seturl(m: types.Message):
-    if m.from_user.id != ADMIN_ID:
-        return
+    if m.from_user.id != ADMIN_ID: return
     try:
         global source_url
-        source_url = m.text.split(maxsplit=1)[1]
-        save_persistent_state()
+        source_url = m.text.split()[1]
+        save()
         await m.answer(f"URL збережено:\n{source_url}")
     except:
         await m.answer("Використання: /seturl https://...")
 
 @dp.message(Command("setcombo"))
 async def setcombo(m: types.Message):
-    if m.from_user.id != ADMIN_ID:
-        return
+    if m.from_user.id != ADMIN_ID: return
     global combo_text
-    combo_text = m.text.partition(" ")[2] or "Комбо порожнє"
-    save_persistent_state()
-    await m.answer("Комбо оновлено вручну")
+    combo_text = m.text.partition(" ")[2] or "Порожнє комбо"
+    save()
+    await m.answer("Комбо збережено")
 
-# ===================== ЗАПУСК =====================
+# Запуск
 async def main():
     asyncio.create_task(scheduler())
-    logging.info("БОТ УСПІШНО ЗАПУЩЕНО — ДАНІ НА VOLUME")
+    logging.info("БОТ ЗАПУЩЕНО — КНОПКИ ПРАЦЮЮТЬ")
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
