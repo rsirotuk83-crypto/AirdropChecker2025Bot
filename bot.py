@@ -9,31 +9,26 @@ from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import Command, CommandStart
 from aiogram.client.default import DefaultBotProperties
 
-# ===================== НАЛАШТУВАННЯ =====================
 logging.basicConfig(level=logging.INFO)
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 ADMIN_ID = int(os.getenv("ADMIN_ID", "0"))
 
-if not BOT_TOKEN:
-    logging.error("Не встановлено BOT_TOKEN")
-    exit(1)
-
 bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode="HTML"))
 dp = Dispatcher()
 
-# ===================== VOLUME =====================
+# Volume
 DATA_DIR = "/app/data"
 DB_PATH = os.path.join(DATA_DIR, "db.json")
 os.makedirs(DATA_DIR, exist_ok=True)
 
 subs = {}
 active = False
-combo_text = "Комбо ще не встановлено.\nАдмін, надішли /seturl <посилання на .txt>"
+combo_text = "Комбо ще не встановлено.\nАдмін, надішли /setcombo <текст>"
 source_url = ""
 
-# ===================== ПЕРСИСТЕНТНІСТЬ =====================
-def load():
+# ПЕРСИСТЕНТНІСТЬ
+def load_persistent_state():
     global subs, active, combo_text, source_url
     if os.path.exists(DB_PATH):
         try:
@@ -47,7 +42,7 @@ def load():
         except Exception as e:
             logging.error(f"Помилка читання: {e}")
 
-def save():
+def save_persistent_state():
     data = {"subs": subs, "active": active, "combo": combo_text, "url": source_url}
     try:
         with open(DB_PATH, "w", encoding="utf-8") as f:
@@ -55,22 +50,21 @@ def save():
     except Exception as e:
         logging.error(f"Помилка збереження: {e}")
 
-load()
+load_persistent_state()  # ← обов'язковий виклик на старті
 
-# ===================== АВТООНОВЛЕННЯ =====================
+# АВТООНОВЛЕННЯ
 async def fetch():
     global combo_text
-    if not source_url:
-        return
+    if not source_url: return
     try:
         async with httpx.AsyncClient(timeout=15) as c:
             r = await c.get(source_url)
-            r.raise_for_status()
-            new = r.text.strip()
-            if new and new != combo_text:
-                combo_text = new
-                save()
-                await bot.send_message(ADMIN_ID, "Комбо автоматично оновлено!")
+            if r.status_code == 200:
+                new = r.text.strip()
+                if new != combo_text:
+                    combo_text = new
+                    save_persistent_state()
+                    await bot.send_message(ADMIN_ID, "Комбо автоматично оновлено!")
     except Exception as e:
         await bot.send_message(ADMIN_ID, f"Помилка автооновлення:\n{e}")
 
@@ -80,14 +74,14 @@ async def scheduler():
         await fetch()
         await asyncio.sleep(24 * 3600)
 
-# ===================== ХЕНДЛЕРИ =====================
+# ХЕНДЛЕРИ
 @dp.message(CommandStart())
 async def start(m: types.Message):
     uid = m.from_user.id
     kb = [[types.InlineKeyboardButton(text="Отримати комбо", callback_data="combo")]]
     if uid == ADMIN_ID:
         kb.append([types.InlineKeyboardButton(text="Адмінка", callback_data="admin")])
-    await m.answer("Привіт! @CryptoComboDaily\nНатисни кнопку:", reply_markup=types.InlineKeyboardMarkup(inline_keyboard=kb))
+    await m.answer("Привіт! Натисни кнопку:", reply_markup=types.InlineKeyboardMarkup(inline_keyboard=kb))
 
 @dp.callback_query(F.data == "combo")
 async def get_combo(c: types.CallbackQuery):
@@ -106,7 +100,7 @@ async def seturl(m: types.Message):
     try:
         global source_url
         source_url = m.text.split(maxsplit=1)[1]
-        save()
+        save_persistent_state()
         await m.answer(f"URL збережено:\n{source_url}")
     except:
         await m.answer("Використання: /seturl https://...")
@@ -117,7 +111,7 @@ async def setcombo(m: types.Message):
         return
     global combo_text
     combo_text = m.text.partition(" ")[2] or "Комбо порожнє"
-    save()
+    save_persistent_state()
     await m.answer("Комбо оновлено вручну")
 
 # ===================== ЗАПУСК =====================
