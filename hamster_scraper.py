@@ -8,7 +8,8 @@ from aiogram.client.default import DefaultBotProperties
 
 # Імпорт планувальника скрапінгу
 # Вважаємо, що цей файл знаходиться у тій самій директорії, що й bot.py
-from hamster_scraper import main_scheduler 
+# --- ЗМІНА: Змінюємо явний імпорт об'єкта на імпорт модуля для уникнення конфліктів.
+import hamster_scraper 
 
 # Налаштування логування
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -101,8 +102,8 @@ async def process_manage_activation(callback: types.CallbackQuery):
 async def start_scheduler_task():
     """Запускає основну функцію скрапера у фоновому режимі."""
     logger.info("Запуск планувальника скрапінгу у фоновому режимі...")
-    # Використовуємо to_thread для блокуючої функції
-    await asyncio.to_thread(main_scheduler) 
+    # --- ЗМІНА: Викликаємо функцію через назву модуля
+    await asyncio.to_thread(hamster_scraper.main_scheduler) 
 
 async def main() -> None:
     """Головна функція запуску бота та планувальника."""
