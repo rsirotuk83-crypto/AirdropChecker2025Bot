@@ -3,264 +3,498 @@ import asyncio
 import logging
 import json
 import httpx
+import re
 from datetime import datetime
-from pathlib import Path
 
 from aiogram import Bot, Dispatcher, types, F
-from aiogram.filters import CommandStart
+from aiogram.filters import CommandStart, Command
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
-from aiogram.exceptions import TelegramAPIError
-from aiogram.webhook.aiohttp_server import SimpleRequestHandler, setup_application
-from aiohttp import web
 
-# --- 1. КОНФІГУРАЦІЯ ТА ІНІЦІАЛІЗАЦІЯ ---
-
-# Змінні середовища Railway
-BOT_TOKEN = os.getenv("BOT_TOKEN")
-ADMIN_ID = int(os.getenv("ADMIN_ID", "0"))
-# Порт, який надає Railway (обов'язкова змінна)
-WEB_SERVER_PORT = int(os.getenv("PORT", 8080))
-# Публічний домен, наданий Railway (зазвичай, це змінна RAILWAY_STATIC_URL, але можна використовувати і основний домен)
-# Я використаю RAILWAY_STATIC_URL, якщо він доступний.
-WEBHOOK_HOST = os.getenv("RAILWAY_STATIC_URL") or os.getenv("YOUR_RAILWAY_DOMAIN") 
-
-if not WEBHOOK_HOST:
-    logging.error("Критична помилка: Не знайдено публічний домен (RAILWAY_STATIC_URL або YOUR_RAILWAY_DOMAIN).")
-    
-WEBHOOK_PATH = "/webhook/"
-WEBHOOK_URL = f"https://{WEBHOOK_HOST}{WEBHOOK_PATH}"
-
+# Налаштування логування
 logging.basicConfig(level=logging.INFO)
 
-bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
-dp = Dispatcher()
+# --- Налаштування змінних середовища ---
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+CRYPTO_BOT_TOKEN = os.getenv("CRYPTO_BOT_TOKEN")
+ADMIN_ID = os.getenv("ADMIN_ID")
 
-# --- 2. ПЕРСИСТЕНТНЕ ЗБЕРІГАННЯ ДАНИХ (db.json) ---
-DATA_DIR = Path("data")
-DB_FILE = DATA_DIR / "db.json"
+if not BOT_TOKEN or not CRYPTO_BOT_TOKEN or not ADMIN_ID:
+    logging.error("ПОМИЛКА: Не встановлено BOT_TOKEN, CRYPTO_BOT_TOKEN або ADMIN_ID в змінних середовища.")
+    exit(1)
 
-# Початкові значення
-db_data = {
-    "combo_text": "Комбо ще не встановлено",
-    "source_url": ""
+try:
+    ADMIN_ID = int(ADMIN_ID)
+except ValueError:
+    logging.error("ПОМИЛКА: Змінна ADMIN_ID повинна бути числовим ідентифікатором.")
+    exit(1)
+
+# API URL Crypto Bot
+CRYPTO_BOT_API_URL = "https://pay.crypt.bot/api"
+API_HEADERS = {
+    "Content-Type": "application/json",
+    "Accept": "application/json",
+    "Telegram-Bot-Api-Token": CRYPTO_BOT_TOKEN
 }
 
-def load_data():
-    """Завантажує дані з JSON-файлу або ініціалізує, якщо файл не існує."""
-    global db_data
-    DATA_DIR.mkdir(exist_ok=True)
-    if DB_FILE.exists():
-        try:
-            with open(DB_FILE, 'r', encoding='utf-8') as f:
-                db_data.update(json.load(f))
-            logging.info("Дані конфігурації успішно завантажено.")
-        except Exception as e:
-            logging.error(f"Помилка читання DB.JSON: {e}. Використовуються початкові значення.")
+# Стан підписки (імітація бази даних в пам'яті)
+USER_SUBSCRIPTIONS = {}
+IS_ACTIVE = False # Глобальний стан активації комбо
+
+# --- Утиліти для екранування (CRITICAL FIX - New Robust Logic) ---
+
+def escape_all_except_formatting(text: str) -> str:
+    """
+    Екранує ВСІ спеціальні символи Markdown V2, крім тих, 
+    що використовуються для необхідного форматування (** та `). 
+    
+    Це найагресивніший метод для уникнення TelegramBadRequest.
+    """
+    
+    # 1. Escape the backslash itself first
+    text = text.replace('\\', r'\\') 
+
+    # 2. Агресивне екранування всіх критичних символів, що не є маркерами форматування.
+    
+    # Символи, які найчастіше викликають Bad Request
+    text = text.replace('.', r'\.') # CRITICAL: Must escape dot.
+    text = text.replace('-', r'\-')
+    text = text.replace(':', r'\:')
+    text = text.replace('!', r'\!')
+    text = text.replace('(', r'\(')
+    text = text.replace(')', r'\)')
+    text = text.replace('_', r'\_') # Italics marker
+    text = text.replace('#', r'\#')
+    text = text.replace('+', r'\+')
+    text = text.replace('=', r'\=')
+    text = text.replace('|', r'\|')
+    text = text.replace('{', r'\{')
+    text = text.replace('}', r'\}')
+    text = text.replace('>', r'\>')
+    text = text.replace('~', r'\~')
+    text = text.replace('[', r'\[')
+    text = text.replace(']', r'\]')
+
+    return text
+
+
+# --- Основні функції бота ---
+
+# Ініціалізація бота
+def setup_bot():
+    """Створює екземпляр бота з коректними налаштуваннями для aiogram 3.x."""
+    bot_properties = DefaultBotProperties(
+        parse_mode=ParseMode.MARKDOWN_V2,
+    )
+    return Bot(token=BOT_TOKEN, default=bot_properties)
+
+# --- Хелпер для Admin Menu ---
+
+def _build_admin_menu_content():
+    """Створює текст та клавіатуру для меню адміністратора."""
+    global IS_ACTIVE
+    
+    # ВИПРАВЛЕНО: Використовуємо **...** для жирного статусу V2
+    status_text = r'**АКТИВНО**' if IS_ACTIVE else r'**НЕАКТИВНО**'
+    
+    if IS_ACTIVE:
+        button_text = "🔴 Деактивувати комбо (Тільки для Premium)"
+        callback = "deactivate_combo"
     else:
-        logging.warning(f"Файл бази даних {DB_FILE} не знайдено. Будуть використані початкові значення.")
-        save_data() # Створюємо файл
+        button_text = "🟢 Активувати комбо (Доступно всім)"
+        callback = "activate_combo"
         
-def save_data():
-    """Зберігає поточні дані в JSON-файл."""
-    try:
-        with open(DB_FILE, 'w', encoding='utf-8') as f:
-            json.dump(db_data, f, ensure_ascii=False, indent=4)
-        logging.info("Дані успішно збережено.")
-    except Exception as e:
-        logging.error(f"Помилка запису DB.JSON: {e}")
-
-# --- 3. АВТООНОВЛЕННЯ З HTTP-ДЖЕРЕЛА ---
-async def fetch():
-    source_url = db_data.get("source_url")
-    if not source_url:
-        logging.warning("URL для автооновлення відсутній.")
-        return
+    keyboard = types.InlineKeyboardMarkup(inline_keyboard=[
+        [types.InlineKeyboardButton(text=button_text, callback_data=callback)],
+        [types.InlineKeyboardButton(text="⬅️ Назад до /start", callback_data="back_to_start")]
+    ])
     
-    try:
-        async with httpx.AsyncClient(timeout=15) as c:
-            r = await c.get(source_url)
-            r.raise_for_status() 
-            
-            new = r.text.strip()
-            
-            if new and new != db_data["combo_text"]:
-                db_data["combo_text"] = new
-                save_data()
-                logging.info(f"Комбо оновлено: {new[:50]}...")
-                if ADMIN_ID:
-                    await bot.send_message(ADMIN_ID, "✅ Комбо автоматично оновлено!")
-            elif new and new == db_data["combo_text"]:
-                 logging.info("Комбо не змінилося.")
-            else:
-                 logging.warning("Отримано порожній контент з джерела.")
-
-    except Exception as e:
-        error_msg = f"Помилка автооновлення: {e.__class__.__name__}: {e}"
-        logging.error(error_msg)
-        if ADMIN_ID:
-            # На Webhook ми не можемо використовувати фонові задачі для адміна, 
-            # тому цю логіку залишаємо для Polling. Але для Webhook-бота, 
-            # якщо fetch викликається планувальником, ми можемо залишити повідомлення.
-            await bot.send_message(ADMIN_ID, f"❌ Помилка автооновлення: {error_msg}")
-
-
-# === ХЕНДЛЕРИ КОМАНД І КНОПОК ===
-
-@dp.message(CommandStart())
-async def start(m: types.Message):
-    kb = [[types.InlineKeyboardButton(text="🎁 Отримати комбо", callback_data="combo")]]
-    if m.from_user.id == ADMIN_ID:
-        kb.append([types.InlineKeyboardButton(text="🛠 Адмінка", callback_data="admin")])
-    
-    await m.answer(
-        "👋 Привіт! <b>@CryptoComboDaily</b>\nЯ надаю актуальні щоденні комбінації.\nНатисни кнопку нижче:", 
-        reply_markup=types.InlineKeyboardMarkup(inline_keyboard=kb)
-    )
-
-@dp.callback_query(F.data == "combo")
-async def show_combo(c: types.CallbackQuery):
-    await c.answer("Оновлюю інформацію...")
-    
-    combo_text = db_data.get("combo_text", "Комбо ще не встановлено")
-    
-    text_to_display = (
-        f"<b>Комбо на {datetime.now():%d.%m.%Y}</b>\n\n"
-        f"{combo_text}"
+    # Застосовуємо escape_all_except_formatting до статичного тексту.
+    base_text = escape_all_except_formatting(
+        f"⚙️ Панель адміністратора\n\n"
+        f"Поточний стан відображення комбо для всіх користувачів: {status_text}\n\n"
+        "Натисніть кнопку, щоб змінити стан."
     )
     
-    try:
-        await c.message.edit_text(
-            text_to_display, 
-            parse_mode="HTML",
-            reply_markup=types.InlineKeyboardMarkup(inline_keyboard=[
-                [types.InlineKeyboardButton(text="🎁 Отримати комбо", callback_data="combo")]
-            ])
+    # 1. Відновлюємо жирний шрифт для заголовка 
+    text = base_text.replace(r'⚙️ Панель адміністратора', r'⚙️ \*\*Панель адміністратора\*\*')
+    
+    # 2. Відновлюємо жирний шрифт для статусу (якщо він був пошкоджений)
+    text = text.replace(r'\*\*АКТИВНО\*\*', r'**АКТИВНО**')
+    text = text.replace(r'\*\*НЕАКТИВНО\*\*', r'**НЕАКТИВНО**')
+
+    return text, keyboard
+
+# Хелпер для /start (тепер використовується і для "Назад")
+def _build_start_message_content(user_name: str, user_id: int, is_admin: bool):
+    """Створює текст та клавіатуру для початкового повідомлення /start."""
+    global IS_ACTIVE
+    
+    # Екрануємо ВСЕ ім'я користувача, щоб уникнути помилок розмітки.
+    escaped_user_name = escape_all_except_formatting(user_name)
+    
+    combo_status = r'**АКТИВНО**' if IS_ACTIVE else r'**НЕАКТИВНО**'
+    
+    status_text = ""
+    keyboard = None
+    
+    # Застосовуємо escape_all_except_formatting до змінної частини тексту
+    if is_admin:
+        # User ID обернений в ``. Ми не екрануємо ` в escape_all_except_formatting.
+        status_text = escape_all_except_formatting(
+            f"Ваш ID: `{user_id}`\nСтатус: Адміністратор\nАктивність: {combo_status}\n\n"
         )
-    except TelegramAPIError as e:
-        if "message is not modified" in str(e):
-            logging.info("Редагування пропущено: текст не змінився.")
-            await c.answer("Комбо вже актуальне!", show_alert=False) 
-        else:
-            logging.error(f"Помилка при редагуванні повідомлення: {e}")
-            await c.answer("Помилка редагування. Спробуйте команду /start знову.", show_alert=True)
+        # Додаємо жирний шрифт, який має бути збережений.
+        status_text = status_text.replace(r'Статус: Адміністратор', r'\*\*Статус\:\*\* Адміністратор')
+        status_text = status_text.replace(r'Ваш ID:', r'\*\*Ваш ID\:\*\*')
+        status_text = status_text.replace(r'Активність:', r'\*\*Активність\:\*\*')
 
-
-@dp.callback_query(F.data == "admin")
-async def admin_panel(c: types.CallbackQuery):
-    if c.from_user.id != ADMIN_ID:
-        await c.answer("Доступ заборонено!", show_alert=True)
-        return
-    await c.answer() 
-    
-    source_url = db_data.get("source_url", "")
-    
-    await c.message.edit_text(
-        f"<b>Адмінка</b>\nПоточний URL: <code>{source_url or 'НЕ ВСТАНОВЛЕНО'}</code>", 
-        reply_markup=types.InlineKeyboardMarkup(inline_keyboard=[
-            [types.InlineKeyboardButton(text="🔄 Оновити зараз", callback_data="force")],
-            [types.InlineKeyboardButton(text="⬅️ Назад", callback_data="start")] 
+        keyboard = types.InlineKeyboardMarkup(inline_keyboard=[
+            [types.InlineKeyboardButton(text="Управління активацією", callback_data="admin_menu")]
         ])
-    )
-    
-@dp.callback_query(F.data == "start")
-async def back_to_start(c: types.CallbackQuery):
-    await c.answer()
-    await start(c.message)
-
-
-@dp.callback_query(F.data == "force")
-async def force(c: types.CallbackQuery):
-    if c.from_user.id != ADMIN_ID:
-        await c.answer("Доступ заборонено!", show_alert=True)
-        return
-    
-    await c.answer("Запускаю примусове оновлення...")
-    await fetch()
-    
-    await c.message.edit_text("✅ Оновлено! Перевірте лог або запустіть /combo", 
-        reply_markup=types.InlineKeyboardMarkup(inline_keyboard=[
-            [types.InlineKeyboardButton(text="⬅️ Назад", callback_data="admin")]
-        ])
-    )
-
-@dp.message(F.text.startswith("/seturl"))
-async def seturl(m: types.Message):
-    if m.from_user.id != ADMIN_ID:
-        return
-    try:
-        new_url = m.text.split(maxsplit=1)[1].strip()
-        db_data["source_url"] = new_url
-        save_data()
-        await m.answer(f"✅ URL збережено та встановлено як джерело:\n<code>{new_url}</code>")
-        await fetch() 
-    except IndexError:
-        await m.answer("Використання: <code>/seturl https://example.com/daily.txt</code>")
-
-@dp.message(F.text.startswith("/setcombo"))
-async def setcombo(m: types.Message):
-    if m.from_user.id != ADMIN_ID:
-        return
-    new_combo = m.text.partition(" ")[2].strip()
-    
-    if new_combo:
-        db_data["combo_text"] = new_combo
-        save_data()
-        await m.answer("✅ Комбо збережено вручну.")
     else:
-        await m.answer("Будь ласка, вкажіть текст комбо після команди. Наприклад: <code>/setcombo Карта А -> 1M</code>")
+        status_text = escape_all_except_formatting(
+            f"Ваш ID: `{user_id}`\n"
+        )
+        status_text = status_text.replace(r'Ваш ID:', r'\*\*Ваш ID\:\*\*')
 
-# --- 4. ЗАПУСК WEBHOOK ТА ПЛАНУВАЛЬНИКА ---
+        keyboard = types.InlineKeyboardMarkup(inline_keyboard=[
+            [types.InlineKeyboardButton(text="Отримати Premium 🔑", callback_data="get_premium")],
+        ])
 
-async def on_startup(dispatcher: Dispatcher, bot: Bot):
-    """Виконується один раз при запуску сервера."""
-    logging.info("Завантаження даних та встановлення Webhook...")
-    load_data() # Завантажуємо дані з db.json
-    
-    # Встановлюємо Webhook на Telegram API
-    await bot.set_webhook(WEBHOOK_URL)
-    logging.info(f"✅ Webhook встановлено: {WEBHOOK_URL}")
-
-    # Запускаємо фонову задачу планувальника (якщо це можливо на вашому хостингу)
-    # Зверніть увагу: на деяких хостингах, які не підтримують фонові процеси, це може не спрацювати.
-    asyncio.create_task(scheduler())
-
-
-async def scheduler():
-    """Планувальник для щоденного оновлення."""
-    logging.info("Планувальник запущено.")
-    await asyncio.sleep(30) # Чекаємо 30 секунд після старту
-    while True:
-        logging.info("Планувальник: Запуск оновлення комбо...")
-        await fetch()
-        await asyncio.sleep(24 * 3600) # Чекаємо 24 години
-
-# === ОСНОВНА ФУНКЦІЯ ЗАПУСКУ ===
-def main():
-    if not BOT_TOKEN:
-        logging.error("Критична помилка: BOT_TOKEN не встановлено.")
-        return
-
-    # 1. Створення додатку aiohttp
-    app = web.Application()
-    
-    # 2. Налаштування обробника Telegram
-    # Webhook буде приймати запити лише за шляхом WEBHOOK_PATH
-    request_handler = SimpleRequestHandler(
-        dispatcher=dp,
-        bot=bot,
-        # На Railway ми можемо пропустити check_ip, оскільки це може спричинити проблеми
+    # Застосовуємо escape_all_except_formatting до статичного тексту
+    welcome_message = escape_all_except_formatting(
+        f"👋 Привіт, {escaped_user_name}!\n\n"
+        f"{status_text}"
+        r"Цей бот надає ранній доступ до щоденних комбо та кодів для популярних криптоігор.\n\n"
+        r"Ціна Premium: 1 TON (або еквівалент)\." # ВИПРАВЛЕНО: Raw string для \.
     )
-    request_handler.register(app, path=WEBHOOK_PATH)
 
-    # 3. Встановлення хендлерів запуску та зупинки
-    app.on_startup.append(lambda app: on_startup(dp, bot))
-    # app.on_shutdown.append(on_shutdown) # Можна додати логіку очищення при зупинці
+    # Редагуємо для збереження необхідного форматування
+    welcome_message = welcome_message.replace(r'👋 Привіт,', r'👋 \*\*Привіт,\*\*')
+    welcome_message = welcome_message.replace(r'Ціна Premium:', r'\*\*Ціна Premium\:\*\*')
+    
+    # Відновлюємо жирний шрифт статусу
+    welcome_message = welcome_message.replace(r'\*\*АКТИВНО\*\*', r'**АКТИВНО**')
+    welcome_message = welcome_message.replace(r'\*\*НЕАКТИВНО\*\*', r'**НЕАКТИВНО**')
+    
+    return welcome_message, keyboard
 
-    # 4. Запуск веб-сервера
-    logging.info(f"🚀 Запуск Webhook сервера на порту {WEB_SERVER_PORT}...")
-    web.run_app(app, host="0.0.0.0", port=WEB_SERVER_PORT)
+
+# Хендлер команди /start (БЕЗ ДЕКОРАТОРА)
+async def command_start_handler(message: types.Message) -> None:
+    """Обробляє команду /start і показує статус підписки."""
+    user_id = message.from_user.id
+    is_admin = user_id == ADMIN_ID
+    
+    welcome_message, keyboard = _build_start_message_content(message.from_user.first_name, user_id, is_admin)
+    
+    await message.answer(welcome_message, reply_markup=keyboard)
+
+# Хендлер команди /combo (БЕЗ ДЕКОРАТОРА)
+async def command_combo_handler(message: types.Message) -> None:
+    """Обробляє команду /combo."""
+    user_id = message.from_user.id
+    is_admin = user_id == ADMIN_ID
+    
+    if is_admin or IS_ACTIVE:
+        # Комбо, яке бачать преміум-користувачі та адмін
+        # Використовуємо raw string (r"""...) для уникнення SyntaxWarning.
+        combo_text_raw = rf"""
+📅 **Комбо та коди на {datetime.now().strftime(r'%d\.%m\.%Y')}**
+*(Ранній доступ Premium)*
+        
+*Hamster Kombat* \u2192 Pizza \u2192 Wallet \u2192 Rocket
+*Blum* \u2192 Cipher: FREEDOM
+*TapSwap* \u2192 MATRIX
+*CATS* \u2192 MEOW2025
+*Rocky Rabbit* \u2192 3\u21921\u21924\u21922
+*Yescoin* \u2192 \u2191\u2192\u2193\u2192\u2191
+*DOGS* \u2192 DOGS2025
+*PixelTap* \u2192 FIRE ✨
+*W\-Coin* \u2192 A\u2192B\u2192C\u2192D
+*Memefi* \u2192 LFG
+*DotCoin* \u2192 PRO
+*BountyBot* \u2192 BTC
+*NEAR Wallet* \u2192 BONUS
+*Hot Wallet* \u2192 MOON
+*Avagold* \u2192 GOLD
+*CEX\.IO* \u2192 STAKE 
+*Pocketfi* \u2192 POCKET
+*Seedify* \u2192 SEED
+*QDROP* \u2192 AIRDROP
+*MetaSense* \u2192 MET
+*SQUID* \u2192 FISH
+        
+**\+ ще 5\-7 рідкісних комбо\.\.\.**
+        """
+        
+        # 1. Екранування стрілок та інших символів у самій розмітці
+        combo_text = combo_text_raw.replace('\u2192', r' \u2192 ').replace('\u2191', r'\u2191').replace('\u2193', r'\u2193')
+
+        # 2. Застосування агресивного екранування до всього тексту, крім форматування
+        # Оскільки в raw-тексті є CEX.IO, крапка буде екранована за замовчуванням.
+        # Залишаємо \u2192 не екранованим, бо це не є спеціальний символ V2.
+        final_combo_text = escape_all_except_formatting(combo_text)
+        
+        # 3. Відновлення форматування, яке не повинно було бути екрановане
+        # (функція escape_all_except_formatting не екранує ** та *, але може екранувати \)
+        final_combo_text = final_combo_text.replace(r'\*\* \+ ще 5\-\-7 рідкісних комбо\\.\.\\.\.\\\*\*', r'**\+ ще 5\-7 рідкісних комбо\.\.\.**')
+        final_combo_text = final_combo_text.replace(r'**\+ ще 5\\-\-7 рідкісних комбо\\.\.\\.\.\\\*\*', r'**\+ ще 5\-7 рідкісних комбо\.\.\.**')
+        
+        await message.answer(final_combo_text)
+    else:
+        # Повідомлення для непідписаних користувачів
+        keyboard = types.InlineKeyboardMarkup(inline_keyboard=[
+            [types.InlineKeyboardButton(text="Отримати Premium 🔑", callback_data="get_premium")],
+        ])
+        
+        # ВИПРАВЛЕНО: Прибираємо parse_mode=ParseMode.MARKDOWN, використовуємо глобальний V2
+        # Текст нижче також пропущено через функцію escape_all_except_formatting для безпеки
+        premium_message_raw = r"🔒 **Увага!** Щоб отримати актуальні комбо та коди, вам потрібна Premium-підписка!\n\nНатисніть кнопку нижче, щоб оформити ранній доступ\." # ВИПРАВЛЕНО: Raw string
+        premium_message = escape_all_except_formatting(premium_message_raw)
+        
+        # Відновлення жирного шрифту
+        premium_message = premium_message.replace(r'\*\*Увага\!\*\*', r'**Увага\!**')
+        
+        await message.answer(
+            premium_message,
+            reply_markup=keyboard
+        )
+
+# Хендлер команди /admin_menu (БЕЗ ДЕКОРАТОРА)
+async def admin_menu_handler(message: types.Message):
+    """Меню для активації/деактивації комбо (доступно лише адміністратору)."""
+    text, keyboard = _build_admin_menu_content()
+    await message.answer(text, reply_markup=keyboard)
+
+# Хендлер для Inline-кнопок (БЕЗ ДЕКОРАТОРА)
+async def inline_callback_handler(callback: types.CallbackQuery):
+    """Обробляє натискання Inline-кнопок."""
+    global IS_ACTIVE
+    user_id = callback.from_user.id
+    
+    # Обробка команд активації/деактивації та навігації (Тільки для адміна)
+    if user_id == ADMIN_ID:
+        
+        # Обробка "Назад"
+        if callback.data == "back_to_start":
+            welcome_message, keyboard = _build_start_message_content(
+                callback.from_user.first_name, 
+                user_id, 
+                True
+            )
+            await callback.answer("Повернення до головного меню...")
+            await callback.message.edit_text(welcome_message, reply_markup=keyboard, parse_mode=ParseMode.MARKDOWN_V2)
+            return
+            
+        # Обробка дій в меню адміністратора
+        if callback.data == "activate_combo":
+            IS_ACTIVE = True
+            await callback.answer("Комбо активовано!")
+            text, keyboard = _build_admin_menu_content()
+            await callback.message.edit_text(text, reply_markup=keyboard, parse_mode=ParseMode.MARKDOWN_V2) 
+            return
+            
+        elif callback.data == "deactivate_combo":
+            IS_ACTIVE = False
+            await callback.answer("Комбо деактивовано!")
+            text, keyboard = _build_admin_menu_content()
+            await callback.message.edit_text(text, reply_markup=keyboard, parse_mode=ParseMode.MARKDOWN_V2) 
+            return
+            
+        elif callback.data == "status_info":
+            await callback.answer(f"Комбо зараз: {'АКТИВНО' if IS_ACTIVE else 'НЕАКТИВНО'}")
+            return
+            
+        elif callback.data == "admin_menu":
+            # Обробка натискання кнопки "Управління активацією"
+            await callback.answer("Відкриваю адмін-меню...")
+            text, keyboard = _build_admin_menu_content()
+            await callback.message.edit_text(text, reply_markup=keyboard, parse_mode=ParseMode.MARKDOWN_V2)
+            return
+
+    # Обробка кнопки "Отримати Premium" (для звичайних користувачів)
+    if callback.data == "get_premium":
+        await callback.answer("Переадресація на оплату...", show_alert=False)
+        
+        # 1. Створення інвойсу через Crypto Bot API
+        try:
+            # Використовуємо 0, як placeholder для bot_username, щоб уникнути помилки.
+            invoice_data = await create_invoice_request(callback.from_user.id, bot_username='0')
+            
+            if invoice_data and invoice_data.get('ok') and invoice_data['result']['pay_url']:
+                pay_url = invoice_data['result']['pay_url']
+                invoice_id = invoice_data['result']['invoice_id']
+                
+                # Кнопки для оплати
+                keyboard = types.InlineKeyboardMarkup(inline_keyboard=[
+                    [types.InlineKeyboardButton(text="Сплатити (Crypto Bot)", url=pay_url)],
+                    [types.InlineKeyboardButton(text="Я сплатив 💸", callback_data=f"check_payment_{invoice_id}")]
+                ])
+                
+                # Застосовуємо екранування до тексту
+                payment_message_raw = r"💰 **Оплата Premium**\n\nДля отримання раннього доступу сплатіть 1 TON (або еквівалент)\.\nНатисніть кнопку 'Сплатити' і після оплати — 'Я сплатив 💸'\." # ВИПРАВЛЕНО: Raw string
+                payment_message = escape_all_except_formatting(payment_message_raw)
+                payment_message = payment_message.replace(r'\*\*Оплата Premium\*\*', r'**Оплата Premium**')
+                
+                await callback.message.answer(
+                    payment_message,
+                    reply_markup=keyboard
+                )
+            else:
+                await callback.message.answer(r"⚠️ Не вдалося створити платіжний інвойс\. Спробуйте пізніше\.") # ВИПРАВЛЕНО: Raw string
+                
+        except Exception as e:
+            logging.error(f"Помилка створення інвойсу: {e}")
+            await callback.message.answer(r"❌ Сталася помилка при підключенні до платіжної системи\.") # ВИПРАВЛЕНО: Raw string
+            
+# Обробка кнопки "Я сплатив" (БЕЗ ДЕКОРАТОРА)
+async def check_payment_handler(callback: types.CallbackQuery):
+    """Перевірка статусу платежу через API Crypto Bot."""
+    invoice_id = callback.data.split('_')[-1]
+    
+    # 1. Запит статусу інвойсу
+    try:
+        payment_info = await check_invoice_status(invoice_id)
+        
+        if payment_info and payment_info.get('ok'):
+            status = payment_info['result']['status']
+            
+            if status == 'paid':
+                # Успішна оплата
+                await callback.message.edit_text(
+                    r"🎉 **Оплата успішна\!** Ви отримали Premium\-доступ\.\n" # ВИПРАВЛЕНО: Raw string
+                    r"Надішліть `\/combo` для отримання актуальних кодів\.", # ВИПРАВЛЕНО: Raw string
+                    parse_mode=ParseMode.MARKDOWN_V2 # Явно вказуємо для edit_text
+                )
+                await callback.answer("Підписка активована!", show_alert=True)
+                return
+            
+            elif status == 'pending':
+                await callback.answer(r"Платіж ще обробляється\. Спробуйте через хвилину\.") # ВИПРАВЛЕНО: Raw string
+                return
+            
+            elif status == 'expired':
+                await callback.message.edit_text(
+                    r"❌ **Термін дії інвойсу сплив\.** Будь ласка, створіть новий інвойс для оплати\.", # ВИПРАВЛЕНО: Raw string
+                    parse_mode=ParseMode.MARKDOWN_V2
+                )
+                await callback.answer(r"Термін дії сплив\.", show_alert=True) # ВИПРАВЛЕНО: Raw string
+                return
+                
+            else: # refunded, failed
+                await callback.message.answer("Статус платежу: " + escape_all_except_formatting(status))
+        
+        else:
+            await callback.answer(r"Не вдалося отримати статус інвойсу\. Зверніться до адміністратора\.") # ВИПРАВЛЕНО: Raw string
+            
+    except Exception as e:
+        logging.error(f"Помилка перевірки статусу платежу: {e}")
+        await callback.answer(r"❌ Сталася помилка при перевірці платежу\.", show_alert=True) # ВИПРАВЛЕНО: Raw string
+
+
+# --- HTTP запити до Crypto Bot API ---
+
+async def create_invoice_request(user_id: int, bot_username: str):
+    """Створює інвойс на 1 TON через Crypto Bot API."""
+    url = f"{CRYPTO_BOT_API_URL}/createInvoice"
+    
+    is_testnet = os.getenv("IS_TESTNET", "false").lower() == "true"
+    
+    payload = {
+        "asset": "TON",
+        "amount": "1", # Фіксована ціна 1 TON
+        "description": "Ранній доступ до Crypto Combo/Кодів",
+        "hidden_message": f"User ID: {user_id}",
+        "paid_btn_name": "callback",
+        "paid_btn_url": f"t.me/{bot_username}", # Повертає користувача до бота
+        "allow_anonymous": False,
+        "payload": json.dumps({"user_id": user_id}), # Додаткові дані, які повернуться після оплати
+        "is_test": is_testnet
+    }
+    
+    # Використовуємо експоненційну затримку для запитів
+    for attempt in range(3):
+        try:
+            async with httpx.AsyncClient() as client:
+                response = await client.post(url, headers=API_HEADERS, json=payload, timeout=10.0)
+                response.raise_for_status() # Викликає виняток для HTTP помилок
+                return response.json()
+        except (httpx.RequestError, httpx.HTTPStatusError) as e:
+            if attempt < 2:
+                delay = 2 ** attempt
+                await asyncio.sleep(delay)
+            else:
+                raise e
+
+async def check_invoice_status(invoice_id: str):
+    """Перевіряє статус інвойсу за ID."""
+    url = f"{CRYPTO_BOT_API_URL}/getInvoices"
+    
+    payload = {
+        "invoice_ids": [invoice_id]
+    }
+    
+    for attempt in range(3):
+        try:
+            async with httpx.AsyncClient() as client:
+                response = await client.post(url, headers=API_HEADERS, json=payload, timeout=10.0)
+                response.raise_for_status()
+                
+                data = response.json()
+                if data.get('ok') and data['result']:
+                    # API повертає список, беремо перший елемент
+                    return {'ok': True, 'result': data['result'][0]}
+                
+                return data
+        except (httpx.RequestError, httpx.HTTPStatusError) as e:
+            if attempt < 2:
+                delay = 2 ** attempt
+                await asyncio.sleep(delay)
+            else:
+                raise e
+
+# --- Запуск бота ---
+
+async def main() -> None:
+    """Головна функція запуску бота. Тут відбувається коректна реєстрація хендлерів."""
+    bot = setup_bot()
+    dp = Dispatcher()
+
+    # КОРЕКТНА РЕЄСТРАЦІЯ ХЕНДЛЕРІВ
+    
+    # 1. Команди (Message Handlers)
+    dp.message.register(command_start_handler, CommandStart())
+    dp.message.register(command_combo_handler, Command("combo"))
+    
+    # Реєстрація адмін-меню тільки для ADMIN_ID
+    dp.message.register(admin_menu_handler, Command("admin_menu"), F.from_user.id == ADMIN_ID)
+
+    # 2. Обробники Callback (Inline Button Handlers)
+    # Реєстрація загальних колбеків
+    dp.callback_query.register(
+        inline_callback_handler, 
+        F.data.in_({"get_premium", "admin_menu", "activate_combo", "deactivate_combo", "status_info", "back_to_start"})
+    )
+    
+    # Реєстрація колбека перевірки платежу
+    dp.callback_query.register(
+        check_payment_handler, 
+        F.data.startswith("check_payment_")
+    )
+
+    logging.info("Бот запущено. Починаю отримувати оновлення...")
+    # Починаємо обробку оновлень
+    # ЗМІНА: Додано явний timeout=30 для запобігання "Connection reset by peer", 
+    # як рекомендовано в аналізі помилок (bot_error_analysis_ua.md, п. 3).
+    await dp.start_polling(bot, timeout=30)
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        logging.info("Бот зупинено вручну.")
+    except Exception as e:
+        logging.critical(f"Критична помилка при запуску: {e}")
