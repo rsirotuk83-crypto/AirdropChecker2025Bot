@@ -14,6 +14,14 @@ from aiogram import Bot, Dispatcher, types
 from aiogram.exceptions import TelegramBadRequest
 from aiogram.storage.memory import MemoryStorage
 from aiohttp import web
+import re
+
+# --- УТИЛІТИ ---
+def escape_markdown_v2(text: str) -> str:
+    """Екранує спеціальні символи MarkdownV2 у тексті."""
+    # Символи, які потрібно екранувати, якщо вони не використовуються для форматування
+    escape_chars = r'_*[]()~`>#+-=|{}.!\\'
+    return re.sub(f'([{re.escape(escape_chars)}])', r'\\\1', text)
 
 # --- КРИТИЧНО ВАЖЛИВИЙ БЛОК ІМПОРТУ СКРАПЕРА ---
 # ІМПОРТУЄМО ЛОГІКУ СКРАПЕРА
@@ -225,18 +233,18 @@ async def admin_panel(c: types.CallbackQuery | types.Message, state: FSMContext)
     
     text = (
         "*Панель адміністратора*\n\n"
-        f"**Комбо (Scraper):** `{combo_text}`\n"
-        f"Поточний URL для автооновлення: {auto_url if auto_url else 'Не встановлено'}\n\n"
+        f"**Комбо (Scraper):** `{escape_markdown_v2(combo_text)}`\n" # Екрануємо комбо_текст
+        f"Поточний URL для автооновлення: {escape_markdown_v2(auto_url) if auto_url else 'Не встановлено'}\n\n"
     )
     
     try:
         await message_to_edit.edit_text(
             text,
             reply_markup=get_admin_keyboard(global_access, bool(combo)),
-            parse_mode=ParseMode.MARKDOWN
+            parse_mode=ParseMode.MARKDOWN_V2 # Залишаємо MARKDOWN_V2 для консистентності
         )
     except TelegramBadRequest as e:
-        # Якщо повідомлення не змінилося, це нормально, просто ігноруємо
+        # ЦЕЙ БЛОК ЛОВИТЬ ПОМИЛКУ "message is not modified", ЯКА БУЛА У ВАШИХ ЛОГАХ.
         if "message is not modified" in str(e):
             logging.info("Admin panel message content is identical, skipping edit.")
         else:
@@ -254,7 +262,7 @@ async def process_main_menu(c: types.CallbackQuery, state: FSMContext):
     await c.message.edit_text(
         f"Привіт! Ваш ID: {c.from_user.id} \nНатисніть кнопку:",
         reply_markup=get_main_keyboard(),
-        parse_mode=ParseMode.HTML
+        parse_mode=ParseMode.HTML # HTML використовуємо тут, щоб уникнути складного екранування в початковому повідомленні
     )
     await c.answer()
 
@@ -301,7 +309,10 @@ async def process_set_combo(message: types.Message, state: FSMContext):
     db.set_global_combo(combo_list)
     if 'GLOBAL_COMBO_CARDS' in globals():
         GLOBAL_COMBO_CARDS[:] = combo_list # Оновлюємо глобальну змінну скрапера, якщо вона була імпортована
-    await message.answer(f"✅ Комбо оновлено: {', '.join(combo_list)}")
+    
+    # Використовуємо escape_markdown_v2 для виводу повідомлення
+    escaped_combo = escape_markdown_v2(", ".join(combo_list))
+    await message.answer(f"✅ Комбо оновлено: {escaped_combo}", parse_mode=ParseMode.MARKDOWN_V2)
     
     await state.clear()
     # Перехід на панель адміна
@@ -337,13 +348,14 @@ async def process_set_url(message: types.Message, state: FSMContext):
         return
     else:
         db.set_auto_update_url(url)
-        await message.answer(f"✅ URL для автооновлення встановлено: {url}")
+        # Використовуємо escape_markdown_v2 для виводу URL
+        escaped_url = escape_markdown_v2(url)
+        await message.answer(f"✅ URL для автооновлення встановлено: {escaped_url}", parse_mode=ParseMode.MARKDOWN_V2)
     
     await state.clear()
     # Перехід на панель адміна
     await admin_panel(message, state)
 
-# --- НОВИЙ ХЕНДЛЕР ДЛЯ ПРЯМОЇ КОМАНДИ /seturl ---
 @dp.message(Command("seturl"))
 async def set_auto_url_command(message: types.Message, state: FSMContext):
     # Перевірка на адміна
@@ -367,11 +379,12 @@ async def set_auto_url_command(message: types.Message, state: FSMContext):
         return
     else:
         db.set_auto_update_url(url)
-        await message.answer(f"✅ URL для автооновлення встановлено: {url}")
+        # Використовуємо escape_markdown_v2 для виводу URL
+        escaped_url = escape_markdown_v2(url)
+        await message.answer(f"✅ URL для автооновлення встановлено: {escaped_url}", parse_mode=ParseMode.MARKDOWN_V2)
         
-    # Очищаємо стан, якщо він був активний (наприклад, команда перебила процес введення через кнопку)
+    # Очищаємо стан
     await state.clear()
-# --- КІНЕЦЬ НОВОГО ХЕНДЛЕРА ---
 
 @dp.callback_query(lambda c: c.data == "force_fetch_combo")
 async def force_fetch_combo(c: types.CallbackQuery, state: FSMContext):
@@ -382,7 +395,7 @@ async def force_fetch_combo(c: types.CallbackQuery, state: FSMContext):
     await c.answer("Запускаю скрапінг комбо...", show_alert=False)
     
     if not SCAPER_AVAILABLE:
-        await c.message.answer("❌ Скрапер недоступний (ImportError). Перевірте файл `hamster_scraper.py`.")
+        await c.message.answer("❌ Скрапер недоступний \\(ImportError\\)\\. Перевірте файл `hamster_scraper.py`\\.", parse_mode=ParseMode.MARKDOWN_V2)
         logging.error("Спроба виконати скрапінг при недоступному SCAPER_AVAILABLE.")
     else:
         try:
@@ -393,15 +406,17 @@ async def force_fetch_combo(c: types.CallbackQuery, state: FSMContext):
                 db.set_global_combo(new_combo)
                 if 'GLOBAL_COMBO_CARDS' in globals():
                     GLOBAL_COMBO_CARDS[:] = new_combo
-                await c.message.answer(f"✅ Комбо оновлено скрапером: {', '.join(new_combo)}")
+                escaped_combo = escape_markdown_v2(", ".join(new_combo))
+                await c.message.answer(f"✅ Комбо оновлено скрапером: {escaped_combo}", parse_mode=ParseMode.MARKDOWN_V2)
                 logging.info(f"Скрапінг успішно оновив комбо: {new_combo}")
             else:
-                error_msg = new_combo[0] if new_combo else "Невідома помилка скрапінгу."
-                await c.message.answer(f"❌ Скрапінг не зміг отримати нове комбо. Результат: {error_msg}")
+                error_msg = escape_markdown_v2(new_combo[0] if new_combo else "Невідома помилка скрапінгу.")
+                await c.message.answer(f"❌ Скрапінг не зміг отримати нове комбо\\. Результат: {error_msg}", parse_mode=ParseMode.MARKDOWN_V2)
                 logging.warning(f"Скрапінг повернув помилку: {error_msg}")
                 
         except Exception as e:
-            await c.message.answer(f"❌ Критична помилка під час виконання скрапінгу: {type(e).__name__}: {e}")
+            escaped_error = escape_markdown_v2(f"{type(e).__name__}: {e}")
+            await c.message.answer(f"❌ Критична помилка під час виконання скрапінгу: {escaped_error}", parse_mode=ParseMode.MARKDOWN_V2)
             logging.error(f"Критична помилка під час виконання _scrape_for_combo: {e}", exc_info=True)
          
     # Повернення на оновлену панель
@@ -420,16 +435,20 @@ async def process_get_combo(c: types.CallbackQuery):
     
     if global_access or is_premium:
         if combo:
-            # Використовуємо екранування символів для MARKDOWN_V2
-            def escape_markdown_v2(text):
-                # Список символів, які потрібно екранувати в MarkdownV2
-                escape_chars = r'_*[]()~`>#+-=|{}.!'
-                return ''.join('\\' + char if char in escape_chars else char for char in text)
-                
+            # --- ВИПРАВЛЕННЯ: ЗАСТОСУВАННЯ ЕКРАНУВАННЯ MDV2 ДЛЯ УСЬОГО ТЕКСТУ ---
+            
+            # Екрануємо дату
             today_date = escape_markdown_v2(datetime.now().strftime("%d.%m.%Y"))
             
-            # Екрануємо кожен елемент комбо
-            combo_text = "\n".join([f"{i+1}\. \*{escape_markdown_v2(card)}\*" for i, card in enumerate(combo)])
+            # Екрануємо кожен елемент комбо, потім обгортаємо в жирний шрифт (\*...\*)
+            combo_text_list = []
+            for i, card in enumerate(combo):
+                # Спочатку екрануємо вміст картки
+                escaped_card_name = escape_markdown_v2(card)
+                # Потім додаємо форматування (порядковий номер, крапку і жирний шрифт)
+                combo_text_list.append(f"{i+1}\. \*{escaped_card_name}\*")
+            
+            combo_text = "\n".join(combo_text_list)
             
             response = (
                 f"\*Комбо на {today_date}\*\n\n"
@@ -439,11 +458,11 @@ async def process_get_combo(c: types.CallbackQuery):
             )
             await c.message.answer(response, parse_mode=ParseMode.MARKDOWN_V2)
         else:
-            await c.message.answer("Комбо ще не встановлено\. Адміністратор, встановіть його вручну або налаштуйте URL\.", parse_mode=ParseMode.MARKDOWN_V2)
+            await c.message.answer("Комбо ще не встановлено\\. Адміністратор, встановіть його вручну або налаштуйте URL\\.", parse_mode=ParseMode.MARKDOWN_V2)
             
     else:
-        # Надсилаємо повідомлення про обмеження, оскільки c.answer() вже було викликано
-        await c.message.answer("❌ Комбо доступне лише для преміум\-користувачів або при глобальній активації\.", parse_mode=ParseMode.MARKDOWN_V2)
+        # Надсилаємо повідомлення про обмеження
+        await c.message.answer("❌ Комбо доступне лише для преміум\\-користувачів або при глобальній активації\\.", parse_mode=ParseMode.MARKDOWN_V2)
         
 # --- WEBHOOKS & APP SETUP ---
 async def on_startup(bot: Bot) -> None:
@@ -510,6 +529,7 @@ if __name__ == "__main__":
     if not TOKEN:
         logging.error("КРИТИЧНА ПОМИЛКА: BOT_TOKEN не встановлено.")
     
+    # Ініціалізуємо бот з ParseMode.MARKDOWN_V2 за замовчуванням
     bot = Bot(token=TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.MARKDOWN_V2))
     dp = Dispatcher(storage=MemoryStorage())
     
@@ -524,7 +544,7 @@ if __name__ == "__main__":
     dp.message.register(process_set_url, AdminState.SET_URL)
     dp.callback_query.register(force_fetch_combo, lambda c: c.data == "force_fetch_combo")
     dp.callback_query.register(process_get_combo, lambda c: c.data == "get_combo")
-    dp.message.register(set_auto_url_command, Command("seturl")) # РЕЄСТРАЦІЯ НОВОЇ КОМАНДИ
+    dp.message.register(set_auto_url_command, Command("seturl")) 
 
     if IS_WEBHOOK:
         main_webhook()
