@@ -2,163 +2,92 @@ import os
 import asyncio
 import logging
 import httpx
-from datetime import datetime, timezone
+from datetime import datetime
+
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import CommandStart
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
-from aiogram.exceptions import TelegramBadRequest
 
-# === Налаштування ===
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logging.basicConfig(level=logging.INFO)
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 ADMIN_ID = int(os.getenv("ADMIN_ID", "0"))
 
-if not BOT_TOKEN:
-    raise ValueError("BOT_TOKEN не встановлено!")
-
 bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
 dp = Dispatcher()
 
-# === Supabase ===
-SUPABASE_URL = os.getenv("SUPABASE_URL")
-SUPABASE_ANON_KEY = os.getenv("SUPABASE_ANON_KEY")
-
-# === Глобальні змінні ===
-GLOBAL_COMBO_ACTIVATION_STATUS = True
-PREMIUM_USERS = {}
-COMBO_URL = None
+# === Дані ===
 combo_text = "Комбо ще не встановлено"
+source_url = ""
 
-# === Функції Supabase ===
-async def supabase_fetch(table: str):
-    headers = {"apikey": SUPABASE_ANON_KEY, "Authorization": f"Bearer {SUPABASE_ANON_KEY}"}
-    async with httpx.AsyncClient() as client:
-        r = await client.get(f"{SUPABASE_URL}/rest/v1/{table}", headers=headers)
-        return r.json() if r.status_code == 200 else []
-
-async def supabase_upsert(table: str, data: dict):
-    headers = {
-        "apikey": SUPABASE_ANON_KEY,
-        "Authorization": f"Bearer {SUPABASE_ANON_KEY}",
-        "Content-Type": "application/json",
-        "Prefer": "resolution=merge-duplicates"
-    }
-    async with httpx.AsyncClient() as client:
-        await client.post(f"{SUPABASE_URL}/rest/v1/{table}", json=data, headers=headers)
-
-# === Завантаження стану при старті ===
-async def load_state():
-    global GLOBAL_COMBO_ACTIVATION_STATUS, PREMIUM_USERS, COMBO_URL, combo_text
-    try:
-        config = await supabase_fetch("config")
-        if config:
-            cfg = config[0]
-            GLOBAL_COMBO_ACTIVATION_STATUS = cfg.get("global_active", True)
-            COMBO_URL = cfg.get("combo_url")
-        users = await supabase_fetch("premium_users")
-        PREMIUM_USERS = {int(u["user_id"]): u["expires_at"] for u in users if u.get("expires_at")}
-        if COMBO_URL:
-            await fetch_combo()
-    except Exception as e:
-        logging.error(f"Помилка завантаження з Supabase: {e}")
-
-# === Збереження стану ===
-async def save_state():
-    await supabase_upsert("config", [{
-        "id": 1,
-        "global_active": GLOBAL_COMBO_ACTIVATION_STATUS,
-        "combo_url": COMBO_URL
-    }])
-
-# === Оновлення комбо ===
-async def fetch_combo():
+# === Автооновлення ===
+async def fetch():
     global combo_text
-    if not COMBO_URL:
-        return
+    if not source_url: return
     try:
         async with httpx.AsyncClient(timeout=15) as c:
-            r = await c.get(COMBO_URL)
+            r = await c.get(source_url)
             if r.status_code == 200:
-                combo_text = r.text.strip()
-    except Exception as e:
-        logging.error(f"Помилка завантаження комбо: {e}")
+                new = r.text.strip()
+                if new and new != combo_text:
+                    combo_text = new
+                    await bot.send_message(ADMIN_ID, "Комбо оновлено автоматично!")
+    except: pass
 
-# === Перевірки ===
-def is_admin(user_id):
-    return user_id == ADMIN_ID
-
-def is_premium(user_id):
-    if is_admin(user_id):
-        return True
-    expiry = PREMIUM_USERS.get(user_id)
-    if expiry:
-        return datetime.now(timezone.utc) < datetime.fromisoformat(expiry.replace("Z", "+00:00"))
-    return False
+async def scheduler():
+    await asyncio.sleep(30)
+    while True:
+        await fetch()
+        await asyncio.sleep(24 * 3600)
 
 # === Хендлери ===
 @dp.message(CommandStart())
 async def start(m: types.Message):
-    kb = [[types.InlineKeyboardButton(text="Отримати комбо", callback_data="get_combo")]]
-    if is_admin(m.from_user.id):
-        kb.append([types.InlineKeyboardButton(text="Адмінка", callback_data="admin_menu")])
+    kb = [[types.InlineKeyboardButton(text="Отримати комбо", callback_data="combo")]]
+    if m.from_user.id == ADMIN_ID:
+        kb.append([types.InlineKeyboardButton(text="Адмінка", callback_data="admin")])
     await m.answer("Привіт! @CryptoComboDaily\nНатисни кнопку:", reply_markup=types.InlineKeyboardMarkup(inline_keyboard=kb))
 
-@dp.callback_query(F.data == "get_combo")
-async def get_combo(c: types.CallbackQuery):
-    if is_premium(c.from_user.id) or GLOBAL_COMBO_ACTIVATION_STATUS:
+# КНОПКИ ПРАЦЮЮТЬ — один універсальний хендлер
+@dp.callback_query()
+async def buttons(c: types.CallbackQuery):
+    if c.data == "combo":
         await c.message.edit_text(f"<b>Комбо на {datetime.now():%d.%m.%Y}</b>\n\n{combo_text}", parse_mode="HTML")
-    else:
-        await c.answer("Доступно лише преміум або при глобальній активації", show_alert=True)
+    elif c.data == "admin" and c.from_user.id == ADMIN_ID:
+        await c.message.edit_text("Адмінка", reply_markup=types.InlineKeyboardMarkup(inline_keyboard=[
+            [types.InlineKeyboardButton(text="Оновити зараз", callback_data="force")],
+            [types.InlineKeyboardButton(text="Назад", callback_data="back")]
+        ]))
 
-@dp.callback_query(F.data == "admin_menu")
-async def admin_menu(c: types.CallbackQuery):
-    if not is_admin(c.from_user.id): return
-    status = "АКТИВНО" if GLOBAL_COMBO_ACTIVATION_STATUS else "НЕАКТИВНО"
-    kb = [
-        [types.InlineKeyboardButton(text=f"Глобально: {status}", callback_data="toggle_global")],
-        [types.InlineKeyboardButton(text="Оновити комбо", callback_data="force_update")],
-        [types.InlineKeyboardButton(text="Встановити URL", callback_data="set_url")]
-    ]
-    await c.message.edit_text("Адмін-панель", reply_markup=types.InlineKeyboardMarkup(inline_keyboard=kb))
-
-@dp.callback_query(F.data.in_({"toggle_global", "force_update", "set_url"}))
-async def admin_actions(c: types.CallbackQuery):
-    if not is_admin(c.from_user.id): return
-    if c.data == "toggle_global":
-        global GLOBAL_COMBO_ACTIVATION_STATUS
-        GLOBAL_COMBO_ACTIVATION_STATUS = not GLOBAL_COMBO_ACTIVATION_STATUS
-        await save_state()
-        await c.answer(f"Глобально {'увімкнено' if GLOBAL_COMBO_ACTIVATION_STATUS else 'вимкнено'}")
-    elif c.data == "force_update":
-        await fetch_combo()
+    elif c.data == "force" and c.from_user.id == ADMIN_ID:
+        await fetch()
         await c.answer("Оновлено!")
-    elif c.data == "set_url":
-        await c.message.edit_text("Надішли новий URL для комбо:")
-        dp["waiting_url"] = c.from_user.id
 
-@dp.message(F.text.startswith(("http://", "https://")))
-async def handle_url(m: types.Message):
-    if dp.get("waiting_url") == m.from_user.id and is_admin(m.from_user.id):
-        global COMBO_URL
-        COMBO_URL = m.text.strip()
-        await save_state()
-        await fetch_combo()
-        await m.answer(f"URL збережено та комбо оновлено:\n{COMBO_URL}")
-        dp["waiting_url"] = None
+# === Команди ===
+@dp.message(F.text.startswith("/seturl"))
+async def seturl(m: types.Message):
+    if m.from_user.id != ADMIN_ID: return
+    try:
+        global source_url
+        source_url = m.text.split(maxsplit=1)[1]
+        await m.answer(f"URL збережено:\n{source_url}")
+        await fetch()
+    except:
+        await m.answer("Використання: /seturl https://...")
+
+@dp.message(F.text.startswith("/setcombo"))
+async def setcombo(m: types.Message):
+    if m.from_user.id != ADMIN_ID: return
+    global combo_text
+    combo_text = m.text.partition(" ")[2] or "Порожнє"
+    await m.answer("Комбо збережено")
 
 # === Запуск ===
 async def main():
-    await load_state()
-    await fetch_combo()  # перший запуск
     asyncio.create_task(scheduler())
+    logging.info("БОТ ЗАПУЩЕНО — КНОПКИ ПРАЦЮЮТЬ")
     await dp.start_polling(bot)
-
-async def scheduler():
-    while True:
-        await asyncio.sleep(24 * 3600)
-        await fetch_combo()
 
 if __name__ == "__main__":
     asyncio.run(main())
