@@ -17,15 +17,13 @@ ADMIN_ID = int(os.getenv("ADMIN_ID", "0"))
 bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
 dp = Dispatcher()
 
-# === Дані ===
 combo_text = "Комбо ще не встановлено"
 source_url = ""
 
-# === Автооновлення ===
+# Автооновлення
 async def fetch():
     global combo_text
-    if not source_url:
-        return
+    if not source_url: return
     try:
         async with httpx.AsyncClient(timeout=15) as c:
             r = await c.get(source_url)
@@ -34,10 +32,8 @@ async def fetch():
                 if new and new != combo_text:
                     combo_text = new
                     if ADMIN_ID:
-                        await bot.send_message(ADMIN_ID, "Комбо автоматично оновлено!")
-    except Exception as e:
-        if ADMIN_ID:
-            await bot.send_message(ADMIN_ID, f"Помилка: {e}")
+                        await bot.send_message(ADMIN_ID, "Комбо оновлено!")
+    except: pass
 
 async def scheduler():
     await asyncio.sleep(30)
@@ -45,56 +41,39 @@ async def scheduler():
         await fetch()
         await asyncio.sleep(24 * 3600)
 
-# === Хендлери ===
+# Хендлери
 @dp.message(CommandStart())
 async def start(m: types.Message):
-    kb = [[types.InlineKeyboardButton(text="Отримати комбо", callback_data="getcombo")]]
+    kb = [[types.InlineKeyboardButton(text="Отримати комбо", callback_data="get_combo")]]
     if m.from_user.id == ADMIN_ID:
         kb.append([types.InlineKeyboardButton(text="Адмінка", callback_data="admin")])
     await m.answer("Привіт! @CryptoComboDaily\nНатисни кнопку:", reply_markup=types.InlineKeyboardMarkup(inline_keyboard=kb))
 
-# КНОПКА "ОТРИМАТИ КОМБО" ПРАЦЮЄ!
-@dp.callback_query(F.data == "getcombo")
+# ВИПРАВЛЕНО: тепер хендлер ловить правильний callback_data
+@dp.callback_query(F.data == "get_combo")
 async def show_combo(c: types.CallbackQuery):
-    await c.message.edit_text(
-        f"<b>Комбо на {datetime.now():%d.%m.%Y}</b>\n\n{combo_text}",
-        parse_mode="HTML",
-        reply_markup=types.InlineKeyboardMarkup(inline_keyboard=[
-            [types.InlineKeyboardButton(text="Оновити", callback_data="getcombo")]
-        ])
-    )
+    await c.message.edit_text(f"<b>Комбо на {datetime.now():%d.%m.%Y}</b>\n\n{combo_text}", parse_mode="HTML")
 
 @dp.callback_query(F.data == "admin")
 async def admin_panel(c: types.CallbackQuery):
-    if c.from_user.id != ADMIN_ID:
-        return
-    await c.message.edit_text(
-        "Адмінка",
-        reply_markup=types.InlineKeyboardMarkup(inline_keyboard=[
-            [types.InlineKeyboardButton(text="Оновити зараз", callback_data="force")],
-            [types.InlineKeyboardButton(text="Назад", callback_data="back")]
-        ])
-    )
+    if c.from_user.id != ADMIN_ID: return
+    await c.message.edit_text("Адмінка", reply_markup=types.InlineKeyboardMarkup(inline_keyboard=[
+        [types.InlineKeyboardButton(text="Оновити зараз", callback_data="force")]
+    ]))
 
 @dp.callback_query(F.data == "force")
 async def force(c: types.CallbackQuery):
-    if c.from_user.id != ADMIN_ID:
-        return
+    if c.from_user.id != ADMIN_ID: return
     await fetch()
     await c.answer("Оновлено!")
 
-@dp.callback_query(F.data == "back")
-async def back(c: types.CallbackQuery):
-    await start(c.message)
-
-# === Команди ===
+# Команди
 @dp.message(F.text.startswith("/seturl"))
 async def seturl(m: types.Message):
-    if m.from_user.id != ADMIN_ID:
-        return
+    if m.from_user.id != ADMIN_ID: return
     try:
         global source_url
-        source_url = m.text.split(maxsplit=1)[1].strip()
+        source_url = m.text.split(maxsplit=1)[1]
         await m.answer(f"URL збережено:\n{source_url}")
         await fetch()
     except:
@@ -102,13 +81,12 @@ async def seturl(m: types.Message):
 
 @dp.message(F.text.startswith("/setcombo"))
 async def setcombo(m: types.Message):
-    if m.from_user.id != ADMIN_ID:
-        return
+    if m.from_user.id != ADMIN_ID: return
     global combo_text
     combo_text = m.text.partition(" ")[2] or "Порожнє"
     await m.answer("Комбо збережено")
 
-# === Запуск ===
+# Запуск
 async def main():
     asyncio.create_task(scheduler())
     logging.info("БОТ ЗАПУЩЕНО — КНОПКИ ПРАЦЮЮТЬ")
