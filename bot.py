@@ -11,7 +11,6 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, CallbackQuery, Message
 from aiogram.client.default import DefaultBotProperties
 from aiogram import Bot, Dispatcher, types
-from aiogram.client.session.aiohttp import AiohttpSession # Додаємо AiohttpSession
 from aiogram.exceptions import TelegramBadRequest
 from aiogram.storage.memory import MemoryStorage
 from aiohttp import web
@@ -20,8 +19,6 @@ from aiohttp import web
 # ІМПОРТУЄМО ЛОГІКУ СКРАПЕРА
 try:
     # Припускаємо, що ці об'єкти існують у hamster_scraper.py
-    # Якщо hamster_scraper.py не існує, ці імпорти створять ImportError,
-    # який буде оброблений нижче.
     from hamster_scraper import main_scheduler, GLOBAL_COMBO_CARDS, _scrape_for_combo 
     SCAPER_AVAILABLE = True
 except ImportError as e:
@@ -199,23 +196,25 @@ async def command_start_handler(message: types.Message) -> None:
         parse_mode=ParseMode.HTML
     )
 
-async def admin_panel(c: types.CallbackQuery, state: FSMContext) -> None:
-    # Важливо: c.answer() потрібно викликати першим, щоб Telegram не думав, що бот завис.
-    # Але c може бути Message, якщо викликається з команди, тому перевіримо
+async def admin_panel(c: types.CallbackQuery | types.Message, state: FSMContext) -> None:
+    # Оскільки c може бути або CallbackQuery, або Message, ми обробляємо це
     if isinstance(c, types.CallbackQuery):
         await c.answer()
         message_to_edit = c.message
+        user_id = c.from_user.id
     elif isinstance(c, types.Message):
         message_to_edit = c
+        user_id = c.from_user.id
     else:
         logging.error("Неправильний тип аргументу, очікується CallbackQuery або Message")
         return
     
     await state.clear()
     
-    user_id = c.from_user.id
     if user_id != db.get_admin_id():
-        await c.answer("У вас немає доступу до панелі адміністратора.", show_alert=True)
+        # Якщо це Message, ми не можемо викликати c.answer. Просто повертаємось.
+        if isinstance(c, types.CallbackQuery):
+            await c.answer("У вас немає доступу до панелі адміністратора.", show_alert=True)
         return
         
     global_access = db.get_global_access()
@@ -253,7 +252,7 @@ async def process_main_menu(c: types.CallbackQuery, state: FSMContext):
     await state.clear()
     # Замість виклику command_start_handler, використовуємо edit_text для оновлення поточного повідомлення
     await c.message.edit_text(
-        "Привіт! Натисніть кнопку:",
+        f"Привіт! Ваш ID: {c.from_user.id} \nНатисніть кнопку:",
         reply_markup=get_main_keyboard(),
         parse_mode=ParseMode.HTML
     )
@@ -287,6 +286,8 @@ async def set_combo_manual(c: types.CallbackQuery, state: FSMContext):
 
 @dp.message(AdminState.SET_COMBO)
 async def process_set_combo(message: types.Message, state: FSMContext):
+    if message.from_user.id != db.get_admin_id(): return # Захист
+        
     combo_input = message.text.split(',')
     combo_list = [c.strip() for c in combo_input if c.strip()]
     
@@ -321,6 +322,8 @@ async def set_auto_url(c: types.CallbackQuery, state: FSMContext):
 
 @dp.message(AdminState.SET_URL)
 async def process_set_url(message: types.Message, state: FSMContext):
+    if message.from_user.id != db.get_admin_id(): return # Захист
+        
     url = message.text.strip()
     
     if url.lower() == "н/д" or url.lower() == "нд":
@@ -366,12 +369,9 @@ async def set_auto_url_command(message: types.Message, state: FSMContext):
         db.set_auto_update_url(url)
         await message.answer(f"✅ URL для автооновлення встановлено: {url}")
         
-    # Додатково викликаємо admin_panel, щоб оновити її стан у чаті, якщо це можливо
-    # На жаль, не маємо message_id, якщо це не відповідь на повідомлення адмін-панелі.
-    # Просто очищаємо стан.
+    # Очищаємо стан, якщо він був активний (наприклад, команда перебила процес введення через кнопку)
     await state.clear()
 # --- КІНЕЦЬ НОВОГО ХЕНДЛЕРА ---
-
 
 @dp.callback_query(lambda c: c.data == "force_fetch_combo")
 async def force_fetch_combo(c: types.CallbackQuery, state: FSMContext):
@@ -414,29 +414,38 @@ async def process_get_combo(c: types.CallbackQuery):
     global_access = db.get_global_access()
     combo = db.get_global_combo()
     
-    await c.answer() # Відповідаємо на колбек
+    # Відповідаємо на колбек, щоб уникнути TelegramBadRequest,
+    # і тільки після цього надсилаємо повідомлення
+    await c.answer() 
     
     if global_access or is_premium:
         if combo:
-            combo_text = "\n".join([f"{i+1}. **{card}**" for i, card in enumerate(combo)])
-            today_date = datetime.now().strftime("%d.%m.%Y")
+            # Використовуємо екранування символів для MARKDOWN_V2
+            def escape_markdown_v2(text):
+                # Список символів, які потрібно екранувати в MarkdownV2
+                escape_chars = r'_*[]()~`>#+-=|{}.!'
+                return ''.join('\\' + char if char in escape_chars else char for char in text)
+                
+            today_date = escape_markdown_v2(datetime.now().strftime("%d.%m.%Y"))
+            
+            # Екрануємо кожен елемент комбо
+            combo_text = "\n".join([f"{i+1}\. \*{escape_markdown_v2(card)}\*" for i, card in enumerate(combo)])
             
             response = (
-                f"**Комбо на {today_date}**\n\n"
+                f"\*Комбо на {today_date}\*\n\n"
                 "Щоденний набір карток для отримання 5,000,000 монет:\n\n"
                 f"{combo_text}\n\n"
-                "_P.S.: Не забувайте про Daily Cipher!_"
+                "\_P\.S\.: Не забувайте про Daily Cipher\!\_"
             )
             await c.message.answer(response, parse_mode=ParseMode.MARKDOWN_V2)
         else:
-            await c.message.answer("Комбо ще не встановлено. Адміністратор, встановіть його вручну або налаштуйте URL.")
+            await c.message.answer("Комбо ще не встановлено\. Адміністратор, встановіть його вручну або налаштуйте URL\.", parse_mode=ParseMode.MARKDOWN_V2)
             
     else:
-        # !!! КОНТРОЛЬ ДОСТУПУ: Надіслати попередження, а не просто відповісти на колбек.
-        await c.message.answer("❌ Комбо доступне лише для преміум-користувачів або при глобальній активації.")
+        # Надсилаємо повідомлення про обмеження, оскільки c.answer() вже було викликано
+        await c.message.answer("❌ Комбо доступне лише для преміум\-користувачів або при глобальній активації\.", parse_mode=ParseMode.MARKDOWN_V2)
         
 # --- WEBHOOKS & APP SETUP ---
-# ... (весь код setup залишається незмінним) ...
 async def on_startup(bot: Bot) -> None:
     if IS_WEBHOOK:
         await bot.set_webhook(WEBHOOK_URL, drop_pending_updates=True)
@@ -501,7 +510,6 @@ if __name__ == "__main__":
     if not TOKEN:
         logging.error("КРИТИЧНА ПОМИЛКА: BOT_TOKEN не встановлено.")
     
-    from aiogram.enums import ParseMode # Додаємо необхідний імпорт
     bot = Bot(token=TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.MARKDOWN_V2))
     dp = Dispatcher(storage=MemoryStorage())
     
