@@ -3,12 +3,25 @@ import asyncio
 import logging
 import json
 from datetime import datetime, timedelta
-from typing import List # <<< Додаємо імпорт List
+from typing import List
+from aiogram.enums import ParseMode
+from aiogram.filters import CommandStart, Command
+from aiogram.fsm.context import FSMContext
+from aiogram.fsm.state import State, StatesGroup
+from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, CallbackQuery, Message
+from aiogram.client.default import DefaultBotProperties
+from aiogram import Bot, Dispatcher, types
+from aiogram.client.session.aiohttp import AiohttpSession # Додаємо AiohttpSession
+from aiogram.exceptions import TelegramBadRequest
+from aiogram.storage.memory import MemoryStorage
+from aiohttp import web
 
 # --- КРИТИЧНО ВАЖЛИВИЙ БЛОК ІМПОРТУ СКРАПЕРА ---
 # ІМПОРТУЄМО ЛОГІКУ СКРАПЕРА
 try:
     # Припускаємо, що ці об'єкти існують у hamster_scraper.py
+    # Якщо hamster_scraper.py не існує, ці імпорти створять ImportError,
+    # який буде оброблений нижче.
     from hamster_scraper import main_scheduler, GLOBAL_COMBO_CARDS, _scrape_for_combo 
     SCAPER_AVAILABLE = True
 except ImportError as e:
@@ -55,7 +68,16 @@ class BotDB:
             self._save_data(data)
         except json.JSONDecodeError:
             logging.error(f"Помилка декодування JSON у файлі {self.db_path}. Використовуються початкові значення.")
-            data = {}
+            data = {
+                "users": {},
+                "global_combo": [],
+                "global_access": False,
+                "admin_id": int(os.environ.get("ADMIN_ID", 0)),
+                "admin_is_premium": False,
+                "payment_token": os.environ.get("CRYPTO_BOT_TOKEN"),
+                "webhook_url": None,
+                "auto_update_url": None,
+            }
         
         # Додаткова перевірка/ініціалізація полів, якщо їх немає
         if 'global_combo' not in data:
@@ -179,7 +201,15 @@ async def command_start_handler(message: types.Message) -> None:
 
 async def admin_panel(c: types.CallbackQuery, state: FSMContext) -> None:
     # Важливо: c.answer() потрібно викликати першим, щоб Telegram не думав, що бот завис.
-    await c.answer()
+    # Але c може бути Message, якщо викликається з команди, тому перевіримо
+    if isinstance(c, types.CallbackQuery):
+        await c.answer()
+        message_to_edit = c.message
+    elif isinstance(c, types.Message):
+        message_to_edit = c
+    else:
+        logging.error("Неправильний тип аргументу, очікується CallbackQuery або Message")
+        return
     
     await state.clear()
     
@@ -201,7 +231,7 @@ async def admin_panel(c: types.CallbackQuery, state: FSMContext) -> None:
     )
     
     try:
-        await c.message.edit_text(
+        await message_to_edit.edit_text(
             text,
             reply_markup=get_admin_keyboard(global_access, bool(combo)),
             parse_mode=ParseMode.MARKDOWN
@@ -221,7 +251,12 @@ async def process_admin_panel(c: types.CallbackQuery, state: FSMContext):
 @dp.callback_query(lambda c: c.data == "main_menu")
 async def process_main_menu(c: types.CallbackQuery, state: FSMContext):
     await state.clear()
-    await command_start_handler(c.message)
+    # Замість виклику command_start_handler, використовуємо edit_text для оновлення поточного повідомлення
+    await c.message.edit_text(
+        "Привіт! Натисніть кнопку:",
+        reply_markup=get_main_keyboard(),
+        parse_mode=ParseMode.HTML
+    )
     await c.answer()
 
 @dp.callback_query(lambda c: c.data == "toggle_global_access")
@@ -268,8 +303,8 @@ async def process_set_combo(message: types.Message, state: FSMContext):
     await message.answer(f"✅ Комбо оновлено: {', '.join(combo_list)}")
     
     await state.clear()
-    # Створюємо фіктивний CallbackQuery для переходу на панель адміна
-    await admin_panel(types.CallbackQuery(message=message, id="dummy", from_user=message.from_user, chat_instance="dummy", data="admin_panel"), state) # Використовуємо фіктивний колбек
+    # Перехід на панель адміна
+    await admin_panel(message, state) # Використовуємо Message
 
 @dp.callback_query(lambda c: c.data == "set_auto_url")
 async def set_auto_url(c: types.CallbackQuery, state: FSMContext):
@@ -302,8 +337,41 @@ async def process_set_url(message: types.Message, state: FSMContext):
         await message.answer(f"✅ URL для автооновлення встановлено: {url}")
     
     await state.clear()
-    # Створюємо фіктивний CallbackQuery для переходу на панель адміна
-    await admin_panel(types.CallbackQuery(message=message, id="dummy", from_user=message.from_user, chat_instance="dummy", data="admin_panel"), state) # Використовуємо фіктивний колбек
+    # Перехід на панель адміна
+    await admin_panel(message, state)
+
+# --- НОВИЙ ХЕНДЛЕР ДЛЯ ПРЯМОЇ КОМАНДИ /seturl ---
+@dp.message(Command("seturl"))
+async def set_auto_url_command(message: types.Message, state: FSMContext):
+    # Перевірка на адміна
+    if message.from_user.id != db.get_admin_id():
+        await message.answer("У вас немає доступу до цієї команди.")
+        return
+
+    # Перевірка наявності аргументу
+    args = message.text.split(' ', 1)
+    if len(args) < 2:
+        await message.answer("❌ Використання: /seturl <URL-адреса>\n\nПриклад: /seturl https://example.com/combo_data")
+        return
+
+    url = args[1].strip()
+
+    if url.lower() in ["н/д", "нд", "none"]:
+        db.set_auto_update_url(None)
+        await message.answer("✅ Автооновлення комбо вимкнено.")
+    elif not (url.startswith('http://') or url.startswith('https://')):
+        await message.answer("Помилка: URL має починатися з `http://` або `https://`.")
+        return
+    else:
+        db.set_auto_update_url(url)
+        await message.answer(f"✅ URL для автооновлення встановлено: {url}")
+        
+    # Додатково викликаємо admin_panel, щоб оновити її стан у чаті, якщо це можливо
+    # На жаль, не маємо message_id, якщо це не відповідь на повідомлення адмін-панелі.
+    # Просто очищаємо стан.
+    await state.clear()
+# --- КІНЕЦЬ НОВОГО ХЕНДЛЕРА ---
+
 
 @dp.callback_query(lambda c: c.data == "force_fetch_combo")
 async def force_fetch_combo(c: types.CallbackQuery, state: FSMContext):
@@ -323,7 +391,8 @@ async def force_fetch_combo(c: types.CallbackQuery, state: FSMContext):
 
             if new_combo and new_combo[0] not in ["Помилка: Секція не знайдена", "Помилка: Неповне комбо", "ImportError: Scraper not found"]:
                 db.set_global_combo(new_combo)
-                GLOBAL_COMBO_CARDS[:] = new_combo
+                if 'GLOBAL_COMBO_CARDS' in globals():
+                    GLOBAL_COMBO_CARDS[:] = new_combo
                 await c.message.answer(f"✅ Комбо оновлено скрапером: {', '.join(new_combo)}")
                 logging.info(f"Скрапінг успішно оновив комбо: {new_combo}")
             else:
@@ -345,6 +414,8 @@ async def process_get_combo(c: types.CallbackQuery):
     global_access = db.get_global_access()
     combo = db.get_global_combo()
     
+    await c.answer() # Відповідаємо на колбек
+    
     if global_access or is_premium:
         if combo:
             combo_text = "\n".join([f"{i+1}. **{card}**" for i, card in enumerate(combo)])
@@ -356,14 +427,13 @@ async def process_get_combo(c: types.CallbackQuery):
                 f"{combo_text}\n\n"
                 "_P.S.: Не забувайте про Daily Cipher!_"
             )
-            await c.message.answer(response, parse_mode=ParseMode.MARKDOWN)
+            await c.message.answer(response, parse_mode=ParseMode.MARKDOWN_V2)
         else:
             await c.message.answer("Комбо ще не встановлено. Адміністратор, встановіть його вручну або налаштуйте URL.")
             
     else:
         # !!! КОНТРОЛЬ ДОСТУПУ: Надіслати попередження, а не просто відповісти на колбек.
-        await c.answer("❌ Комбо доступне лише для преміум-користувачів або при глобальній активації.", show_alert=True)
-        # c.answer() вже викликаний вище в show_alert=True
+        await c.message.answer("❌ Комбо доступне лише для преміум-користувачів або при глобальній активації.")
         
 # --- WEBHOOKS & APP SETUP ---
 # ... (весь код setup залишається незмінним) ...
@@ -431,9 +501,7 @@ if __name__ == "__main__":
     if not TOKEN:
         logging.error("КРИТИЧНА ПОМИЛКА: BOT_TOKEN не встановлено.")
     
-    # Для Polling ParseMode.MARKDOWN_V2 потрібно змінити на ParseMode.MARKDOWN,
-    # щоб уникнути помилок із символами `_` та `*`
-    from aiogram.exceptions import TelegramBadRequest # Переносимо імпорт на початок
+    from aiogram.enums import ParseMode # Додаємо необхідний імпорт
     bot = Bot(token=TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.MARKDOWN_V2))
     dp = Dispatcher(storage=MemoryStorage())
     
@@ -448,7 +516,7 @@ if __name__ == "__main__":
     dp.message.register(process_set_url, AdminState.SET_URL)
     dp.callback_query.register(force_fetch_combo, lambda c: c.data == "force_fetch_combo")
     dp.callback_query.register(process_get_combo, lambda c: c.data == "get_combo")
-
+    dp.message.register(set_auto_url_command, Command("seturl")) # РЕЄСТРАЦІЯ НОВОЇ КОМАНДИ
 
     if IS_WEBHOOK:
         main_webhook()
