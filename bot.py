@@ -1,7 +1,6 @@
 import os
 import asyncio
 import logging
-import json
 import httpx
 from datetime import datetime
 
@@ -49,23 +48,33 @@ async def scheduler():
 # === Хендлери ===
 @dp.message(CommandStart())
 async def start(m: types.Message):
-    kb = [[types.InlineKeyboardButton(text="Отримати комбо", callback_data="combo")]]
+    kb = [[types.InlineKeyboardButton(text="Отримати комбо", callback_data="getcombo")]]
     if m.from_user.id == ADMIN_ID:
         kb.append([types.InlineKeyboardButton(text="Адмінка", callback_data="admin")])
     await m.answer("Привіт! @CryptoComboDaily\nНатисни кнопку:", reply_markup=types.InlineKeyboardMarkup(inline_keyboard=kb))
 
-# КНОПКИ ПРАЦЮЮТЬ!
-@dp.callback_query(F.data == "combo")
+# КНОПКА "ОТРИМАТИ КОМБО" ПРАЦЮЄ!
+@dp.callback_query(F.data == "getcombo")
 async def show_combo(c: types.CallbackQuery):
-    await c.message.edit_text(f"<b>Комбо на {datetime.now():%d.%m.%Y}</b>\n\n{combo_text}", parse_mode="HTML")
+    await c.message.edit_text(
+        f"<b>Комбо на {datetime.now():%d.%m.%Y}</b>\n\n{combo_text}",
+        parse_mode="HTML",
+        reply_markup=types.InlineKeyboardMarkup(inline_keyboard=[
+            [types.InlineKeyboardButton(text="Оновити", callback_data="getcombo")]
+        ])
+    )
 
 @dp.callback_query(F.data == "admin")
 async def admin_panel(c: types.CallbackQuery):
     if c.from_user.id != ADMIN_ID:
         return
-    await c.message.edit_text("Адмінка", reply_markup=types.InlineKeyboardMarkup(inline_keyboard=[
-        [types.InlineKeyboardButton(text="Оновити зараз", callback_data="force")]
-    ]))
+    await c.message.edit_text(
+        "Адмінка",
+        reply_markup=types.InlineKeyboardMarkup(inline_keyboard=[
+            [types.InlineKeyboardButton(text="Оновити зараз", callback_data="force")],
+            [types.InlineKeyboardButton(text="Назад", callback_data="back")]
+        ])
+    )
 
 @dp.callback_query(F.data == "force")
 async def force(c: types.CallbackQuery):
@@ -74,14 +83,18 @@ async def force(c: types.CallbackQuery):
     await fetch()
     await c.answer("Оновлено!")
 
-# Команди
+@dp.callback_query(F.data == "back")
+async def back(c: types.CallbackQuery):
+    await start(c.message)
+
+# === Команди ===
 @dp.message(F.text.startswith("/seturl"))
 async def seturl(m: types.Message):
     if m.from_user.id != ADMIN_ID:
         return
     try:
         global source_url
-        source_url = m.text.split(maxsplit=1)[1]
+        source_url = m.text.split(maxsplit=1)[1].strip()
         await m.answer(f"URL збережено:\n{source_url}")
         await fetch()
     except:
@@ -95,7 +108,7 @@ async def setcombo(m: types.Message):
     combo_text = m.text.partition(" ")[2] or "Порожнє"
     await m.answer("Комбо збережено")
 
-# Запуск
+# === Запуск ===
 async def main():
     asyncio.create_task(scheduler())
     logging.info("БОТ ЗАПУЩЕНО — КНОПКИ ПРАЦЮЮТЬ")
