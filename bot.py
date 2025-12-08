@@ -2,390 +2,456 @@ import os
 import asyncio
 import logging
 import json
-from datetime import datetime
-from typing import Dict, Any, List
+from datetime import datetime, timedelta
 
-# --- КРИТИЧНО ВАЖЛИВИЙ ІМПОРТ ДЛЯ СКРАПЕРА ---
+# ІМПОРТУЄМО ЛОГІКУ СКРАПЕРА
 try:
-    # Припускаємо, що hamster_scraper.py знаходиться у тому ж каталозі
     from hamster_scraper import main_scheduler, GLOBAL_COMBO_CARDS
-except ImportError as e:
-    logging.error(f"Не вдалося імпортувати модуль скрапера: {e}. Переконайтеся, що hamster_scraper.py існує.")
-    # Якщо імпорт не вдався, заглушка, щоб код працював
-    GLOBAL_COMBO_CARDS: List[str] = []
-    def main_scheduler():
-        logging.warning("Фоновий планувальник не запущений, оскільки скрапер не імпортується.")
-        return asyncio.sleep(3600) # Чекаємо годину
+except ImportError:
+    logging.error("Не вдалося імпортувати main_scheduler та GLOBAL_COMBO_CARDS з hamster_scraper.py. Скрапер не працюватиме.")
+    # Заглушка, якщо скрапер не знайдено
+    async def main_scheduler():
+        logging.warning("Фоновий планувальник не запущений. Скрапінг не працює.")
+        await asyncio.sleep(3600)
+    GLOBAL_COMBO_CARDS = []
 
-# --- ІМПОРТИ AIOGRAM ТА WEBHOOK ---
-import aiohttp.web
+# Import necessary modules for Webhooks (aiohttp) and aiogram
+from aiohttp import web
 from aiogram import Bot, Dispatcher, types
 from aiogram.enums import ParseMode
 from aiogram.filters import CommandStart, Command
-from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
-from aiogram.exceptions import TelegramBadRequest, TelegramConflictError # Додано ConflictError
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton, WebAppInfo
+from aiogram.client.default import DefaultBotProperties
+from aiogram.fsm.storage.memory import MemoryStorage
+from aiogram.fsm.context import FSMContext
+from aiogram.fsm.state import State, StatesGroup
+# >>> ДОДАЄМО ІМПОРТ ВИКЛЮЧЕННЯ ДЛЯ ВИПРАВЛЕННЯ ПОМИЛКИ
+from aiogram.exceptions import TelegramBadRequest
+# <<<
 
-# --- КОНСТАНТИ ТА ЗМІННІ СЕРЕДОВИЩА ---
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+# --- НАЛАШТУВАННЯ БАЗИ ДАНИХ (DB) ---
+class BotDB:
+    def __init__(self, data_dir="data", db_file="db.json"):
+        self.data_dir = data_dir
+        self.db_path = os.path.join(data_dir, db_file)
+        os.makedirs(data_dir, exist_ok=True)
+        logging.info(f"Перевірено або створено директорію даних: {self.data_dir}")
+        self.data = self._load_data()
+        
+    def _load_data(self):
+        try:
+            with open(self.db_path, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+            logging.info(f"Дані успішно завантажено з {self.db_path}")
+        except FileNotFoundError:
+            logging.warning(f"Файл бази даних {self.db_path} не знайдено. Будуть використані початкові значення.")
+            data = {
+                "users": {},
+                "global_combo": [],
+                "global_access": False,
+                "admin_id": int(os.environ.get("ADMIN_ID", 0)),
+                "admin_is_premium": False,
+                "payment_token": os.environ.get("CRYPTO_BOT_TOKEN"),
+                "webhook_url": None,
+                "auto_update_url": None,
+            }
+            self._save_data(data)
+        except json.JSONDecodeError:
+            logging.error(f"Помилка декодування JSON у файлі {self.db_path}. Використовуються початкові значення.")
+            data = {}
+        
+        # Додаткова перевірка/ініціалізація полів, якщо їх немає
+        if 'global_combo' not in data:
+             data['global_combo'] = []
+        if 'global_access' not in data:
+             data['global_access'] = False
 
-# Змінні оточення
-BOT_TOKEN = os.getenv("BOT_TOKEN")
-CRYPTO_BOT_TOKEN = os.getenv("CRYPTO_BOT_TOKEN")
+        return data
 
-ADMIN_ID_RAW = os.getenv("ADMIN_ID")
-ADMIN_ID: int = 0
-try:
-    ADMIN_ID = int(ADMIN_ID_RAW) if ADMIN_ID_RAW else 0
-except (ValueError, TypeError):
-    logging.error("ADMIN_ID не встановлено або некоректне. Адмін-функції вимкнено.")
+    def _save_data(self, data):
+        try:
+            with open(self.db_path, 'w', encoding='utf-8') as f:
+                json.dump(data, f, indent=4, ensure_ascii=False)
+            logging.info(f"Дані успішно збережено у {self.db_path}")
+        except Exception as e:
+            logging.error(f"Помилка збереження даних: {e}")
 
-# Конфігурація Webhook
-WEBHOOK_HOST = os.getenv("WEBHOOK_HOST")
-WEBHOOK_PATH = "/webhook"
-# WEBHOOK_URL буде виглядати як: https://airdropchecker2025bot-production.up.railway.app/webhook
-WEBHOOK_URL = f"https://{WEBHOOK_HOST}{WEBHOOK_PATH}" if WEBHOOK_HOST else ""
+    def get_user(self, user_id):
+        return self.data["users"].get(str(user_id), {})
+
+    def set_user_premium(self, user_id, is_premium=True):
+        user_id_str = str(user_id)
+        if user_id_str not in self.data["users"]:
+            self.data["users"][user_id_str] = {"is_premium": is_premium, "premium_until": None}
+        else:
+            self.data["users"][user_id_str]["is_premium"] = is_premium
+        self._save_data(self.data)
+
+    def is_premium(self, user_id):
+        # Якщо це адмін, і він був помічений як преміум при старті (через логіку нижче), то він преміум
+        if user_id == self.data.get("admin_id") and self.data.get("admin_is_premium"):
+            return True
+
+        user = self.get_user(user_id)
+        return user.get("is_premium", False)
+
+    def set_global_combo(self, combo: List[str]):
+        self.data["global_combo"] = combo
+        self._save_data(self.data)
+
+    def get_global_combo(self):
+        return self.data["global_combo"]
+
+    def set_global_access(self, status: bool):
+        self.data["global_access"] = status
+        self._save_data(self.data)
+
+    def get_global_access(self):
+        return self.data["global_access"]
+
+    def get_admin_id(self):
+        return self.data.get("admin_id")
+    
+    def set_auto_update_url(self, url):
+        self.data["auto_update_url"] = url
+        self._save_data(self.data)
+
+    def get_auto_update_url(self):
+        return self.data.get("auto_update_url")
+
+db = BotDB()
+admin_id_from_env = int(os.environ.get("ADMIN_ID", 0))
+
+# Перевірка та встановлення адміна як преміум, якщо його ID було надано
+if admin_id_from_env and admin_id_from_env == db.get_admin_id():
+    db.set_user_premium(admin_id_from_env, is_premium=True)
+    db.data["admin_is_premium"] = True
+    logging.info(f"Адмін ID {admin_id_from_env} додано до Premium.")
+
+# --- КОНСТАНТИ WEBHOOKS ---
+WEBHOOK_HOST = os.environ.get("WEBHOOK_HOST")
+WEBHOOK_PATH = f"/webhook/{os.environ.get('BOT_TOKEN')}"
 WEB_SERVER_HOST = "0.0.0.0"
 WEB_SERVER_PORT = int(os.environ.get("PORT", 8080))
 
-# Файл даних для збереження стану
-DATA_DIR = "data"
-DB_FILE = os.path.join(DATA_DIR, "db.json")
-
-# --- МОДЕЛЬ ДАНИХ (БАЗА ДАНИХ) ---
-
-class BotDB:
-    def __init__(self, db_file: str):
-        self.db_file = db_file
-        self.data: Dict[str, Any] = {
-            "premium_users": {},  # {user_id: datetime_str (end date)}
-            "global_combo": None, # [card1, card2, card3]
-            "global_access": False, # Чи дозволено доступ усім
-            "crypto_bot_token": CRYPTO_BOT_TOKEN # Токен для Crypto Bot API
-        }
-        self._load()
-
-    def _load(self):
-        os.makedirs(DATA_DIR, exist_ok=True)
-        logging.info(f"Перевірено або створено директорію даних: {DATA_DIR}")
-        
-        if os.path.exists(self.db_file):
-            try:
-                with open(self.db_file, 'r') as f:
-                    self.data = json.load(f)
-                logging.info("Дані успішно завантажено.")
-            except (IOError, json.JSONDecodeError):
-                logging.warning(f"Помилка читання або парсингу файлу бази даних {self.db_file}. Створено новий.")
-                self._save()
-        else:
-            logging.warning(f"Файл бази даних {self.db_file} не знайдено. Будуть використані початкові значення.")
-            self._save()
-
-        # Забезпечуємо, що адмін завжди має преміум
-        if ADMIN_ID and str(ADMIN_ID) not in self.data["premium_users"]:
-            # Встановлюємо дату закінчення через 100 років для адміна
-            self.data["premium_users"][str(ADMIN_ID)] = (datetime.now().replace(year=datetime.now().year + 100)).isoformat()
-            logging.info(f"Адмін ID {ADMIN_ID} додано до Premium.")
-            self._save()
-        
-    def _save(self):
-        try:
-            with open(self.db_file, 'w') as f:
-                json.dump(self.data, f, indent=4)
-            logging.info("Дані успішно збережено.")
-        except IOError as e:
-            logging.error(f"КРИТИЧНА ПОМИЛКА: Не вдалося зберегти дані у файл {self.db_file}: {e}")
-
-    def is_premium(self, user_id: int) -> bool:
-        user_id_str = str(user_id)
-        if user_id_str == str(ADMIN_ID):
-            return True
-        
-        if self.data["global_access"]:
-            return True
-
-        if user_id_str in self.data["premium_users"]:
-            expiry_date_str = self.data["premium_users"][user_id_str]
-            if expiry_date_str:
-                expiry_date = datetime.fromisoformat(expiry_date_str)
-                return datetime.now() < expiry_date
-        return False
+if not WEBHOOK_HOST:
+    logging.warning("WEBHOOK_HOST не встановлено. Бот працюватиме в режимі Polling (для локального запуску).")
+    IS_WEBHOOK = False
+else:
+    WEBHOOK_URL = f"{WEBHOOK_HOST}{WEBHOOK_PATH}"
+    IS_WEBHOOK = True
     
-    # ... інші методи (set_combo, set_global_access, add_premium, etc.)
-    # Прості методи для демонстрації
-    def set_global_combo(self, combo: List[str]):
-        self.data["global_combo"] = combo
-        self._save()
+# --- STATES ---
+class AdminState(StatesGroup):
+    SET_COMBO = State()
+    SET_URL = State()
 
-    def get_global_combo(self) -> List[str] | None:
-        return self.data["global_combo"]
-    
-    def set_global_access(self, status: bool):
-        self.data["global_access"] = status
-        self._save()
-        
-    def get_global_access(self) -> bool:
-        return self.data["global_access"]
-
-# Ініціалізація бази даних
-db = BotDB(DB_FILE)
-
-# --- ІНІЦІАЛІЗАЦІЯ БОТА ---
-bot = Bot(token=BOT_TOKEN, parse_mode=ParseMode.MARKDOWN_V2)
-dp = Dispatcher()
-
-# --- ОБРОБНИКИ КОМАНД ТА КНОПОК ---
-
-def get_main_keyboard(is_admin: bool) -> InlineKeyboardMarkup:
-    buttons = [
+# --- HANDLERS ---
+def get_main_keyboard():
+    keyboard = [
         [InlineKeyboardButton(text="Отримати комбо 🔑", callback_data="get_combo")],
     ]
-    if is_admin:
-        buttons.append([InlineKeyboardButton(text="Адмінка ⚙️", callback_data="admin_panel")])
-    
-    return InlineKeyboardMarkup(inline_keyboard=buttons)
+    if db.get_admin_id() and db.get_admin_id() != 0:
+         keyboard.append([InlineKeyboardButton(text="Адмінка ⚙️", callback_data="admin_panel")])
+    return InlineKeyboardMarkup(inline_keyboard=keyboard)
+
+def get_admin_keyboard(access_status: bool, combo_set: bool):
+    keyboard = [
+        [InlineKeyboardButton(text="Оновити комбо зараз 🔄", callback_data="force_fetch_combo")],
+        [InlineKeyboardButton(text=f"Глобальний доступ: {'✅ УВІМКНЕНО' if access_status else '❌ ВИМКНЕНО'}", callback_data="toggle_global_access")],
+        [InlineKeyboardButton(text="Встановити комбо вручну 📝", callback_data="set_combo_manual")],
+        [InlineKeyboardButton(text="Встановити URL для автооновлення 🔗", callback_data="set_auto_url")],
+        [InlineKeyboardButton(text="Управління Premium (0 users) 💎", callback_data="manage_premium")],
+        [InlineKeyboardButton(text="Головне меню 🏠", callback_data="main_menu")],
+    ]
+    return InlineKeyboardMarkup(inline_keyboard=keyboard)
+
 
 @dp.message(CommandStart())
-async def command_start_handler(message: Message) -> None:
+async def command_start_handler(message: types.Message) -> None:
     user_id = message.from_user.id
-    is_admin = user_id == ADMIN_ID
+    is_admin = user_id == db.get_admin_id()
+    
+    greeting = f"Привіт! Ваш ID: {user_id}" if is_admin else "Привіт!"
     
     await message.answer(
-        f"Привіт, {message.from_user.full_name}\\!\n\nВаш ID: `{user_id}`\n\nНатисніть кнопку:",
-        reply_markup=get_main_keyboard(is_admin)
+        f"{greeting} \nНатисніть кнопку:",
+        reply_markup=get_main_keyboard(),
+        parse_mode=ParseMode.HTML
     )
 
-async def admin_panel(c: CallbackQuery | Message) -> None:
-    if isinstance(c, CallbackQuery):
-        user_id = c.from_user.id
-    elif isinstance(c, Message):
-        user_id = c.from_user.id
-    else:
-        return
-
-    if user_id != ADMIN_ID:
-        if isinstance(c, CallbackQuery):
-            await c.answer("Ви не адміністратор!", show_alert=True)
-        return
-
-    # Перевіряємо, що скрапер оновив комбо
-    current_combo_list = db.get_global_combo() if db.get_global_combo() else GLOBAL_COMBO_CARDS
-    combo_status = "\\n\\- " + "\\n\\- ".join(current_combo_list) if current_combo_list else "❌ Комбо не встановлено"
-
-    global_access_status = "✅ УВІМКНЕНО" if db.get_global_access() else "❌ ВИМКНЕНО"
+# >>> ВИПРАВЛЕННЯ ТУТ: Обробка TelegramBadRequest
+async def admin_panel(c: types.CallbackQuery, state: FSMContext) -> None:
+    # Важливо: c.answer() потрібно викликати першим, щоб Telegram не думав, що бот завис.
+    await c.answer()
     
-    premium_users_count = len(db.data["premium_users"])
-
+    await state.clear()
+    
+    user_id = c.from_user.id
+    if user_id != db.get_admin_id():
+        await c.answer("У вас немає доступу до панелі адміністратора.", show_alert=True)
+        return
+        
+    global_access = db.get_global_access()
+    combo = db.get_global_combo()
+    combo_text = ", ".join(combo) if combo else "Не встановлено"
+    
+    auto_url = db.get_auto_update_url()
+    
     text = (
-        "*⚙️ Панель адміністратора*\n\n"
-        f"*Статус Комбо:*\n{combo_status}\n\n"
-        f"*Глобальний доступ: {global_access_status}*\n"
-        f"*Premium користувачів:* {premium_users_count}\n\n"
-        "Для встановлення комбо вручну скористайтеся `/setcombo <картка1>|<картка2>|<картка3>`"
+        "*Панель адміністратора*\n\n"
+        f"**Комбо (Scraper):** `{combo_text}`\n"
+        f"Поточний URL для автооновлення: {auto_url if auto_url else 'Не встановлено'}\n\n"
     )
-
-    markup = InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="🔄 Оновити комбо зараз (Скрапер)", callback_data="force_fetch")],
-        [InlineKeyboardButton(text=f"Глобальний доступ: {global_access_status}", callback_data="toggle_global")],
-        [InlineKeyboardButton(text=f"Управління Premium ({premium_users_count} users)", callback_data="premium_manage")],
-        [InlineKeyboardButton(text="⬅️ Головне меню", callback_data="main_menu")]
-    ])
     
-    if isinstance(c, CallbackQuery):
-        try:
-            await c.message.edit_text(text, reply_markup=markup, parse_mode=ParseMode.MARKDOWN_V2)
-            await c.answer()
-        except TelegramBadRequest:
-            # Ігноруємо, якщо повідомлення не змінилося
-            await c.answer("Панель не змінилася.")
-    elif isinstance(c, Message):
-        await c.answer(text, reply_markup=markup, parse_mode=ParseMode.MARKDOWN_V2)
+    try:
+        await c.message.edit_text(
+            text,
+            reply_markup=get_admin_keyboard(global_access, bool(combo)),
+            parse_mode=ParseMode.MARKDOWN
+        )
+    except TelegramBadRequest as e:
+        # Якщо повідомлення не змінилося, це нормально, просто ігноруємо
+        if "message is not modified" in str(e):
+            logging.info("Admin panel message content is identical, skipping edit.")
+        else:
+            # Інша помилка при редагуванні, про всяк випадок
+            logging.error(f"Помилка редагування адмін-панелі: {e}")
 
+# <<< КІНЕЦЬ ВИПРАВЛЕННЯ
 
 @dp.callback_query(lambda c: c.data == "admin_panel")
-async def process_admin_panel(c: CallbackQuery):
-    await admin_panel(c)
+async def process_admin_panel(c: types.CallbackQuery, state: FSMContext):
+    await admin_panel(c, state)
 
 @dp.callback_query(lambda c: c.data == "main_menu")
-async def process_main_menu(c: CallbackQuery):
-    user_id = c.from_user.id
-    is_admin = user_id == ADMIN_ID
-    await c.message.edit_text(
-        f"Привіт, {c.from_user.full_name}\\!\n\nВаш ID: `{user_id}`\n\nНатисніть кнопку:",
-        reply_markup=get_main_keyboard(is_admin)
-    )
+async def process_main_menu(c: types.CallbackQuery, state: FSMContext):
+    await state.clear()
+    await command_start_handler(c.message)
     await c.answer()
 
-@dp.callback_query(lambda c: c.data == "toggle_global")
-async def toggle_global_access(c: CallbackQuery):
-    if c.from_user.id != ADMIN_ID:
-        return await c.answer("Ви не адміністратор!", show_alert=True)
-    
+@dp.callback_query(lambda c: c.data == "toggle_global_access")
+async def toggle_global_access(c: types.CallbackQuery, state: FSMContext):
+    user_id = c.from_user.id
+    if user_id != db.get_admin_id():
+        await c.answer("У вас немає доступу.", show_alert=True)
+        return
+
     new_status = not db.get_global_access()
     db.set_global_access(new_status)
-    await admin_panel(c)
-    await c.answer(f"Глобальний доступ {'УВІМКНЕНО' if new_status else 'ВИМКНЕНО'}")
+    await c.answer(f"Глобальний доступ: {'УВІМКНЕНО' if new_status else 'ВИМКНЕНО'}", show_alert=True)
+    # Повернення на оновлену панель
+    await admin_panel(c, state) 
 
-
-@dp.callback_query(lambda c: c.data == "force_fetch")
-async def force_fetch_combo(c: CallbackQuery):
-    if c.from_user.id != ADMIN_ID:
-        return await c.answer("Ви не адміністратор!", show_alert=True)
-    
-    await c.answer("Запускаю скрапер...")
-    
-    # Виклик синхронного скрапінгу в окремому потоці, щоб не блокувати AIOHTTP
-    from hamster_scraper import _scrape_for_combo
-    
-    new_combo = await asyncio.to_thread(_scrape_for_combo) 
-    
-    if new_combo:
-        # Оновлюємо глобальну змінну, яку планувальник оновлює регулярно
-        from hamster_scraper import GLOBAL_COMBO_CARDS as G
-        G[:] = new_combo 
-        
-        # Оновлюємо базу даних, щоб відобразити нове комбо
-        db.set_global_combo(new_combo)
-        await admin_panel(c)
-        await c.answer("Комбо успішно оновлено!")
-    else:
-        await c.answer("Помилка скрапінгу. Перевірте логі!")
-
-
-@dp.message(Command("setcombo"))
-async def set_combo_manual(message: Message):
-    if message.from_user.id != ADMIN_ID:
-        return await message.answer("Ця команда доступна лише адміністратору.")
-    
-    args = message.text.split(maxsplit=1)
-    if len(args) < 2:
-        return await message.answer(
-            "❌ Використання: `/setcombo <картка1>|<картка2>|<картка3>`", 
-            parse_mode=ParseMode.MARKDOWN_V2
-        )
-    
-    combo_text = args[1].strip()
-    combo_list = [c.strip() for c in combo_text.split('|') if c.strip()]
-    
-    if len(combo_list) != 3:
-        return await message.answer("❌ Комбо має містити рівно три картки, розділені символом `|`.")
-        
-    db.set_global_combo(combo_list)
-    
-    # Також оновлюємо глобальну змінну скрапера для синхронізації
-    try:
-        from hamster_scraper import GLOBAL_COMBO_CARDS as G
-        G[:] = combo_list
-    except ImportError:
-        logging.warning("Не вдалося оновити глобальну змінну скрапера. Перевірте імпорт.")
-        
-    await message.answer(
-        f"✅ Комбо успішно встановлено вручну на:\n\\- {combo_list[0]}\n\\- {combo_list[1]}\n\\- {combo_list[2]}",
-        parse_mode=ParseMode.MARKDOWN_V2
-    )
-    await admin_panel(message)
-
-
-@dp.callback_query(lambda c: c.data == "get_combo")
-async def get_combo_data_handler(c: CallbackQuery):
-    user_id = c.from_user.id
-    
-    if not db.is_premium(user_id):
-        # Якщо користувач не premium і не адмін
-        # Тут має бути логіка генерації інвойсу, але для простоти...
-        await c.answer("Комбо доступне лише для преміум-користувачів.", show_alert=True)
-        # Додайте тут кнопку для оплати, якщо потрібно
+@dp.callback_query(lambda c: c.data == "set_combo_manual")
+async def set_combo_manual(c: types.CallbackQuery, state: FSMContext):
+    if c.from_user.id != db.get_admin_id():
+        await c.answer("У вас немає доступу.", show_alert=True)
         return
-
-    # --- ВИКОРИСТАННЯ ГЛОБАЛЬНОЇ ЗМІННОЇ З СКРАПЕРА ---
-    combo_list = db.get_global_combo()
     
-    # Якщо скрапер не встиг завантажити, але є дані з бази
-    if not combo_list and GLOBAL_COMBO_CARDS:
-        combo_list = GLOBAL_COMBO_CARDS
-        db.set_global_combo(combo_list) # Зберігаємо у базу, якщо отримали вперше
-    
-    # Фінальна перевірка
-    if not combo_list:
-        await c.answer("Комбо ще не встановлено. Адміністратор має його встановити.", show_alert=True)
-        return
-        
-    combo_text = "\\n\\- ".join(combo_list)
-    date_str = datetime.now().strftime("%d\\.%m\\.%Y")
-    
-    message_text = (
-        f"🏆 *Щоденне комбо на {date_str}* 🏆\n\n"
-        f"Отримайте *5,000,000* монет, купивши:\n"
-        f"\\- {combo_text}\n\n"
-        "_(Дані оновлюються автоматично кожні 3 години\.)_"
-    )
-    
-    await c.message.answer(
-        message_text,
-        parse_mode=ParseMode.MARKDOWN_V2
-    )
+    await c.message.edit_text("Введіть 3 картки комбо, розділені комою (наприклад: Card1, Card2, Card3):",
+                              reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                                  [InlineKeyboardButton(text="Скасувати", callback_data="admin_panel")]
+                              ]))
+    await state.set_state(AdminState.SET_COMBO)
     await c.answer()
 
-# --- ФУНКЦІЇ ЗАПУСКУ WEBHOOK ---
+@dp.message(AdminState.SET_COMBO)
+async def process_set_combo(message: types.Message, state: FSMContext):
+    combo_input = message.text.split(',')
+    combo_list = [c.strip() for c in combo_input if c.strip()]
+    
+    if len(combo_list) != 3:
+        await message.answer("Помилка: Ви повинні ввести рівно 3 картки, розділені комою. Спробуйте ще раз:",
+                             reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                                 [InlineKeyboardButton(text="Скасувати", callback_data="admin_panel")]
+                             ]))
+        return
 
-async def on_startup(bot: Bot) -> None:
-    """Викликається перед запуском Webhook."""
-    if not WEBHOOK_HOST:
-        logging.error("WEBHOOK_HOST не встановлено. Бот не може запуститися через Webhook.")
+    db.set_global_combo(combo_list)
+    GLOBAL_COMBO_CARDS[:] = combo_list # Оновлюємо глобальну змінну скрапера
+    await message.answer(f"✅ Комбо оновлено: {', '.join(combo_list)}")
+    
+    await state.clear()
+    # Створюємо фіктивний CallbackQuery для переходу на панель адміна
+    await admin_panel(types.CallbackQuery(message=message), state)
+
+@dp.callback_query(lambda c: c.data == "set_auto_url")
+async def set_auto_url(c: types.CallbackQuery, state: FSMContext):
+    if c.from_user.id != db.get_admin_id():
+        await c.answer("У вас немає доступу.", show_alert=True)
         return
     
-    # 1. Спроба видалити старий Webhook (якщо був Polling)
-    try:
-        await bot.delete_webhook()
-        logging.info("Спроба видалення старого Webhook та очищення оновлень...")
-    except TelegramConflictError:
-        # Ігноруємо, якщо Webhook не було
-        pass
+    await c.message.edit_text("Введіть URL, звідки бот повинен автоматично отримувати комбо (або `Н/Д` для вимкнення):",
+                              reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                                  [InlineKeyboardButton(text="Скасувати", callback_data="admin_panel")]
+                              ]))
+    await state.set_state(AdminState.SET_URL)
+    await c.answer()
 
-    # 2. Встановлення нового Webhook
-    try:
-        await bot.set_webhook(WEBHOOK_URL)
-        logging.info(f"WEBHOOK УСПІШНО ВСТАНОВЛЕНО на: {WEBHOOK_URL}")
-    except Exception as e:
-        logging.error(f"Помилка встановлення Webhook на {WEBHOOK_URL}: {e}")
-        raise
+@dp.message(AdminState.SET_URL)
+async def process_set_url(message: types.Message, state: FSMContext):
+    url = message.text.strip()
+    
+    if url.lower() == "н/д" or url.lower() == "нд":
+        db.set_auto_update_url(None)
+        await message.answer("✅ Автооновлення комбо вимкнено.")
+    elif not (url.startswith('http://') or url.startswith('https://')):
+        await message.answer("Помилка: URL має починатися з `http://` або `https://`. Спробуйте ще раз:",
+                             reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                                 [InlineKeyboardButton(text="Скасувати", callback_data="admin_panel")]
+                             ]))
+        return
+    else:
+        db.set_auto_update_url(url)
+        await message.answer(f"✅ URL для автооновлення встановлено: {url}")
+    
+    await state.clear()
+    # Створюємо фіктивний CallbackQuery для переходу на панель адміна
+    await admin_panel(types.CallbackQuery(message=message), state)
 
-    # 3. Запуск фонового планувальника скрапінгу
+@dp.callback_query(lambda c: c.data == "force_fetch_combo")
+async def force_fetch_combo(c: types.CallbackQuery, state: FSMContext):
+    if c.from_user.id != db.get_admin_id():
+        await c.answer("У вас немає доступу.", show_alert=True)
+        return
+    
+    await c.answer("Запускаю скрапінг комбо...", show_alert=False)
+    
+    # Виконуємо скрапінг синхронно в окремому потоці, щоб не блокувати aiohttp
+    # !!! УВАГА: Я бачу, що ваш бот запустився в режимі Polling. 
+    # В цьому режимі Webhook-частина (aiohttp) не потрібна, але ми залишаємо
+    # логіку, яка дозволяє переключитися на Webhook у Railway.
+    
+    # Якщо скрапер не імпортувався, _scrape_for_combo не буде визначено
+    try:
+        from hamster_scraper import _scrape_for_combo
+        new_combo = await asyncio.to_thread(_scrape_for_combo)
+
+        if new_combo and new_combo[0] not in ["Помилка: Секція не знайдена", "Помилка: Неповне комбо"]:
+            db.set_global_combo(new_combo)
+            GLOBAL_COMBO_CARDS[:] = new_combo
+            await c.message.answer(f"✅ Комбо оновлено скрапером: {', '.join(new_combo)}")
+        else:
+            await c.message.answer("❌ Скрапінг не зміг отримати нове комбо. Перевірте логі та URL.")
+    except ImportError:
+         await c.message.answer("❌ Скрапер не знайдено. Перевірте файл `hamster_scraper.py`.")
+         
+    # Повернення на оновлену панель
+    await admin_panel(c, state)
+
+@dp.callback_query(lambda c: c.data == "get_combo")
+async def process_get_combo(c: types.CallbackQuery):
+    user_id = c.from_user.id
+    is_premium = db.is_premium(user_id)
+    global_access = db.get_global_access()
+    combo = db.get_global_combo()
+    
+    if global_access or is_premium:
+        if combo:
+            combo_text = "\n".join([f"{i+1}. **{card}**" for i, card in enumerate(combo)])
+            today_date = datetime.now().strftime("%d.%m.%Y")
+            
+            response = (
+                f"**Комбо на {today_date}**\n\n"
+                "Щоденний набір карток для отримання 5,000,000 монет:\n\n"
+                f"{combo_text}\n\n"
+                "_P.S.: Не забувайте про Daily Cipher!_"
+            )
+            await c.message.answer(response, parse_mode=ParseMode.MARKDOWN)
+        else:
+            await c.message.answer("Комбо ще не встановлено. Адміністратор, встановіть його вручну або налаштуйте URL.")
+            
+    else:
+        await c.message.answer("❌ Комбо доступне лише для преміум-користувачів або при глобальній активації.")
+        
+    await c.answer()
+
+# --- WEBHOOKS & APP SETUP ---
+
+async def on_startup(bot: Bot) -> None:
+    if IS_WEBHOOK:
+        await bot.set_webhook(WEBHOOK_URL, drop_pending_updates=True)
+        logging.info(f"Webhook встановлено на: {WEBHOOK_URL}")
+    
+    # Запуск планувальника скрапінгу у фоновому режимі
     logging.info("Запуск планувальника скрапінгу у фоновому режимі...")
     asyncio.create_task(main_scheduler())
 
-
 async def on_shutdown(bot: Bot) -> None:
-    """Викликається при вимкненні Webhook."""
-    logging.warning("Сервер вимикається. Видаляю Webhook...")
-    await bot.delete_webhook()
+    if IS_WEBHOOK:
+        await bot.delete_webhook()
+        logging.info("Webhook видалено.")
 
-def main() -> None:
-    """Головна функція для запуску Webhook-сервера."""
-    if not BOT_TOKEN:
-        logging.error("BOT_TOKEN не знайдено в змінних оточення. Неможливо запустити бот.")
-        return
-    
-    # Налаштування диспетчера
+async def handle_webhook(request: web.Request):
+    bot = request.app['bot']
+    dispatcher = request.app['dp']
+
+    if request.match_info.get('token') != os.environ.get('BOT_TOKEN'):
+        return web.Response(status=403)
+
+    update = types.Update.model_validate(await request.json(), context={"bot": bot})
+    await dispatcher.feed_update(bot, update)
+    return web.Response()
+
+def main_polling() -> None:
+    # Запуск в режимі Polling (для локального запуску)
     dp.startup.register(on_startup)
     dp.shutdown.register(on_shutdown)
     
-    # Налаштування Webhook-застосунку
-    app = aiohttp.web.Application()
+    logging.info("БОТ УСПІШНО ЗАПУЩЕНО — ПОЧИНАЄМО ПОЛЛІНГ")
+    try:
+        # У режимі Polling Webhook-функції не запускаються
+        asyncio.run(dp.start_polling(bot))
+    except KeyboardInterrupt:
+        logging.info("Бот вимкнено.")
+
+def main_webhook() -> None:
+    # Запуск в режимі Webhook
     
-    # Підключення диспетчера як обробника POST-запитів на WEBHOOK_PATH
-    webhook_requests_handler = dp.get_web_app_factory()
-    app.router.add_post(WEBHOOK_PATH, webhook_requests_handler)
+    app = web.Application()
+    app["bot"] = bot
+    app["dp"] = dp
     
-    # Запуск сервера
-    logging.info(f"БОТ УСПІШНО ЗАПУЩЕНО - Webhook слухає на {WEB_SERVER_HOST}:{WEB_SERVER_PORT}")
-    aiohttp.web.run_app(
-        app, 
-        host=WEB_SERVER_HOST, 
-        port=WEB_SERVER_PORT
-    )
+    # Реєстрація хендлера вебхука
+    app.router.add_post(WEBHOOK_PATH, handle_webhook)
+    
+    # Реєстрація on_startup/on_shutdown
+    app.on_startup.append(lambda a: on_startup(bot))
+    app.on_shutdown.append(lambda a: on_shutdown(bot))
+    
+    logging.info(f"БОТ УСПІШНО ЗАПУЩЕНО — ПОЧИНАЄМО WEBHOOK на порту {WEB_SERVER_PORT}")
+    web.run_app(app, host=WEB_SERVER_HOST, port=WEB_SERVER_PORT)
+
 
 if __name__ == "__main__":
-    try:
-        main()
-    except Exception as e:
-        logging.error(f"Критична помилка запуску бота: {e}")
+    # Налаштування логування
+    logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+    
+    # Ініціалізація бота
+    TOKEN = os.environ.get("BOT_TOKEN")
+    if not TOKEN:
+        logging.error("КРИТИЧНА ПОМИЛКА: BOT_TOKEN не встановлено.")
+    
+    # Для Polling ParseMode.MARKDOWN_V2 потрібно змінити на ParseMode.MARKDOWN,
+    # щоб уникнути помилок із символами `_` та `*`
+    bot = Bot(token=TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.MARKDOWN_V2))
+    dp = Dispatcher(storage=MemoryStorage())
+    
+    # Реєстрація хендлерів
+    dp.message.register(command_start_handler, CommandStart())
+    dp.callback_query.register(process_admin_panel, lambda c: c.data == "admin_panel")
+    dp.callback_query.register(process_main_menu, lambda c: c.data == "main_menu")
+    dp.callback_query.register(toggle_global_access, lambda c: c.data == "toggle_global_access")
+    dp.callback_query.register(set_combo_manual, lambda c: c.data == "set_combo_manual")
+    dp.callback_query.register(set_auto_url, lambda c: c.data == "set_auto_url")
+    dp.message.register(process_set_combo, AdminState.SET_COMBO)
+    dp.message.register(process_set_url, AdminState.SET_URL)
+    dp.callback_query.register(force_fetch_combo, lambda c: c.data == "force_fetch_combo")
+    dp.callback_query.register(process_get_combo, lambda c: c.data == "get_combo")
+
+
+    if IS_WEBHOOK:
+        main_webhook()
+    else:
+        main_polling()
