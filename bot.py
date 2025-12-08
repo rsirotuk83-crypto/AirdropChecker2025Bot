@@ -14,6 +14,9 @@ logging.basicConfig(level=logging.INFO)
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 ADMIN_ID = int(os.getenv("ADMIN_ID", "0"))
 
+if not BOT_TOKEN:
+    raise ValueError("BOT_TOKEN не встановлено")
+
 bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
 dp = Dispatcher()
 
@@ -33,8 +36,7 @@ async def fetch():
                     if ADMIN_ID:
                         await bot.send_message(ADMIN_ID, "Комбо оновлено!")
     except Exception as e:
-        if ADMIN_ID:
-            await bot.send_message(ADMIN_ID, f"Помилка: {e}")
+        logging.error(f"Помилка оновлення: {e}")
 
 async def scheduler():
     await asyncio.sleep(30)
@@ -51,10 +53,13 @@ async def start(m: types.Message):
 
 @dp.callback_query(F.data == "getcombo")
 async def show_combo(c: types.CallbackQuery):
-    await c.message.edit_text(f"<b>Комбо на {datetime.now():%d.%m.%Y}</b>\n\n{combo_text}", parse_mode="HTML")
+    await c.message.edit_text(
+        f"<b>Комбо на {datetime.now():%d.%m.%Y}</b>\n\n{combo_text}",
+        parse_mode="HTML"
+    )
 
 @dp.callback_query(F.data == "admin")
-async def admin_panel(c: types.CallbackQuery):
+async def admin(c: types.CallbackQuery):
     if c.from_user.id != ADMIN_ID: return
     await c.message.edit_text("Адмінка", reply_markup=types.InlineKeyboardMarkup(inline_keyboard=[
         [types.InlineKeyboardButton(text="Оновити зараз", callback_data="force")]
