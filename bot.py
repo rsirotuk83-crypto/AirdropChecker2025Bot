@@ -32,9 +32,7 @@ async def fetch():
                     combo_text = new
                     if ADMIN_ID:
                         await bot.send_message(ADMIN_ID, "Комбо оновлено!")
-    except Exception as e:
-        if ADMIN_ID:
-            await bot.send_message(ADMIN_ID, f"Помилка: {e}")
+    except: pass
 
 async def scheduler():
     await asyncio.sleep(30)
@@ -44,13 +42,12 @@ async def scheduler():
 
 @dp.message(CommandStart())
 async def start(m: types.Message):
-    kb = [[types.InlineKeyboardButton(text="Отримати комбо", callback_data="getcombo")]]
+    kb = [[types.InlineKeyboardButton(text="Отримати комбо", callback_data="combo")]]
     if m.from_user.id == ADMIN_ID:
         kb.append([types.InlineKeyboardButton(text="Адмінка", callback_data="admin")])
     await m.answer("Привіт! @CryptoComboDaily\nНатисни кнопку:", reply_markup=types.InlineKeyboardMarkup(inline_keyboard=kb))
 
-# ЦЕЙ ХЕНДЛЕР ПРАЦЮЄ — callback_data збігається з кнопкою
-@dp.callback_query(F.data == "getcombo")
+@dp.callback_query(F.data == "combo")
 async def show_combo(c: types.CallbackQuery):
     await c.message.edit_text(f"<b>Комбо на {datetime.now():%d.%m.%Y}</b>\n\n{combo_text}", parse_mode="HTML")
 
