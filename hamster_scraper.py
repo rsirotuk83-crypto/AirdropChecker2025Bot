@@ -2,31 +2,42 @@ import asyncio
 import logging
 import requests
 import json
+import time
 from bs4 import BeautifulSoup
-from typing import List
+from typing import List, Dict, Union
 
 # Налаштування логування
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 
-# --- КОНСТАНТИ ---
-# URL, який ми скрапимо для TON Station
-TON_STATION_URL = "https://miningcombo.com/ton-station/"
+# --- КОНСТАНТИ ТА КОНФІГУРАЦІЯ ІГОР ---
+COMBO_SOURCES: Dict[str, str] = {
+    # Game: URL (4-карткове комбо)
+    "TON Station": "https://miningcombo.com/ton-station/",
+    "Hamster Kombat": "https://hamster-combo.com/",
+    "TapSwap": "https://miningcombo.com/tapswap-2/",
+    "Blum": "https://miningcombo.com/blum-2/",
+    "Cattea": "https://miningcombo.com/cattea/",
+}
 
-# Глобальна змінна для зберігання комбо-карток. 
-# bot.py використовує її для передачі даних між скрапером та Telegram.
-# Ініціалізуємо її як порожній список.
-GLOBAL_COMBO_CARDS: List[str] = []
+# Глобальна змінна для зберігання всіх комбо. 
+# Ключ: назва гри, Значення: List[str] або List[str помилки]
+GLOBAL_COMBO_CARDS: Dict[str, Union[List[str], List[str]]] = {}
+
+# Ініціалізація GLOBAL_COMBO_CARDS заглушками
+for game in COMBO_SOURCES:
+    GLOBAL_COMBO_CARDS[game] = [f"Скрапер: Комбо для {game} ще не завантажено."]
 
 # --- ФУНКЦІЇ СРАПІНГУ ---
 
-def scrape_for_combo() -> List[str]:
+def scrape_for_combo(game_name: str, url: str) -> List[str]:
     """
-    Основна функція для скрапінгу комбо з TON_STATION_URL.
+    Основна функція для скрапінгу комбо з вказаного URL.
     
-    УВАГА: Цю функцію потрібно адаптувати, якщо структура сайту зміниться!
+    УВАГА: Селектори (combo_container, card_elements) можуть потребувати налаштування 
+    для кожної окремої сторінки, якщо їхня HTML-структура різна!
     """
-    logger.info(f"Починаю скрапінг TON Station на {TON_STATION_URL} для оновлення комбо (4 карт)...")
+    logger.info(f"Починаю скрапінг {game_name} на {url}...")
     
     headers = {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
@@ -34,105 +45,103 @@ def scrape_for_combo() -> List[str]:
 
     try:
         # 1. Запит до сторінки
-        response = requests.get(TON_STATION_URL, headers=headers, timeout=15)
-        response.raise_for_status() # Викликає виняток для поганих кодів (4xx або 5xx)
+        response = requests.get(url, headers=headers, timeout=15)
+        response.raise_for_status() 
         
         # 2. Парсинг HTML
         soup = BeautifulSoup(response.content, 'html.parser')
 
         # --- КРИТИЧНА СЕКЦІЯ: ВИЗНАЧЕННЯ СЕЛЕКТОРІВ ---
         
-        # Вам потрібно перевірити актуальний HTML сторінки 
-        # (наприклад, через F12 у браузері) і знайти актуальний селектор.
-        # Шукаємо елемент, який містить список карток. Наприклад, це може бути div з ID чи класом.
+        # Універсальні спроби пошуку:
         
-        # Приклад 1: Якщо комбо обгорнуте в div з класом 'combo-list'
-        combo_container = soup.find('div', class_='combo-cards-list')
+        # 1. Пошук контейнера комбо за поширеними класами
+        combo_container = soup.find('div', class_='combo-cards-list') or \
+                          soup.find('div', class_='daily-combo-section') or \
+                          soup.find('section', id='daily-combo-section') or \
+                          soup.find('div', class_='combo-wrapper')
         
         if not combo_container:
-            # Спроба знайти за іншим, більш загальним тегом
-            combo_container = soup.find('section', id='daily-combo-section')
+            # Це сигнал, що селектори потрібно адаптувати
+            return [f"Скрапер: Секція комбо для {game_name} не знайдена."]
 
-        if not combo_container:
-            # Це і є ваша помилка: "Секція комбо не знайдена на сторінці."
-            return [f"Скрапер: Секція комбо не знайдена на сторінці {TON_STATION_URL}. Перевірте селектор."]
-
-        # 3. Витягування окремих карток
-        # Припускаємо, що кожна картка — це елемент 'li' або 'div' всередині контейнера.
-        # Використовуйте максимально точний селектор для елементів карток:
-        card_elements = combo_container.find_all('li', class_='combo-card-item') 
-        
-        # Якщо card_elements порожній, спробуйте інший селектор (наприклад, 'p' або 'div')
+        # 2. Пошук елементів карток всередині контейнера
+        # Спроба знайти елементи списку або параграфи, що містять назви карток
+        card_elements = combo_container.find_all('li', class_='combo-card-item') or \
+                        combo_container.find_all('div', class_='card-name') or \
+                        combo_container.find_all('p')
+                        
         if not card_elements:
-             # Наприклад, якщо картки просто в тегах <b>
-             card_elements = combo_container.find_all('b') 
-
-        if not card_elements:
-             return [f"Скрапер: Знайдено контейнер, але не знайдено елементів карток всередині."]
+             return [f"Скрапер: Знайдено контейнер, але не знайдено елементів карток всередині для {game_name}."]
              
-        # 4. Формування списку результатів
+        # 3. Формування списку результатів
         combo_cards = [
             element.get_text(strip=True)
-            for element in card_elements
+            for element in card_elements if element.get_text(strip=True)
         ]
         
-        # Обмежуємо до 4 карток, якщо знайдено більше
+        # Більшість комбо складається з 3-4 карт. Обмежуємо або перевіряємо мінімум.
+        if len(combo_cards) < 3:
+            return [f"Скрапер: Знайдено лише {len(combo_cards)} карток для {game_name}. Очікується 3-4."]
+        
+        # Обмежуємо до 4
         combo_cards = combo_cards[:4]
 
-        if not combo_cards or len(combo_cards) < 4:
-            return [f"Скрапер: Знайдено лише {len(combo_cards)} карток. Очікується 4."]
-            
-        logger.info(f"Скрапінг успішно завершено. Знайдено комбо: {combo_cards}")
+        logger.info(f"Скрапінг {game_name} успішно завершено. Знайдено комбо: {combo_cards}")
         return combo_cards
 
     except requests.RequestException as e:
-        logger.error(f"Помилка HTTP під час скрапінгу: {e}")
-        return [f"Помилка HTTP: Не вдалося підключитися до {TON_STATION_URL}. {e}"]
+        logger.error(f"Помилка HTTP під час скрапінгу {game_name}: {e}")
+        return [f"Помилка HTTP: Не вдалося підключитися до {url} для {game_name}. {e}"]
     except Exception as e:
-        logger.error(f"Невідома помилка скрапінгу: {e}")
-        return [f"Невідома помилка скрапінгу: {e}"]
+        logger.error(f"Невідома помилка скрапінгу {game_name}: {e}")
+        return [f"Невідома помилка скрапінгу: {e} для {game_name}"]
 
 # --- ФОНОВИЙ ПЛАНУВАЛЬНИК ---
 
 async def main_scheduler():
     """
-    Запускає скрапінг комбо кожні 15 хвилин і оновлює глобальну змінну.
+    Запускає скрапінг для всіх ігор і оновлює глобальну змінну.
     """
     global GLOBAL_COMBO_CARDS
     
-    # Спроба першого запуску при старті
-    initial_combo = scrape_for_combo()
-    if initial_combo and not initial_combo[0].startswith("Скрапер:"):
-        GLOBAL_COMBO_CARDS[:] = initial_combo
-        logger.info(f"Ініціалізація GLOBAL_COMBO_CARDS при старті: {GLOBAL_COMBO_CARDS}")
-    else:
-        GLOBAL_COMBO_CARDS[:] = ["Скрапер: Не встановлено (помилка при старті)."]
-        logger.warning(f"Ініціалізація GLOBAL_COMBO_CARDS не вдалася: {initial_combo[0]}")
-        
+    logger.info("Запуск первинного скрапінгу для всіх ігор...")
     
+    # Первинний запуск (синхронно)
+    for game_name, url in COMBO_SOURCES.items():
+        result = scrape_for_combo(game_name, url)
+        GLOBAL_COMBO_CARDS[game_name] = result
+        if result and not result[0].startswith("Скрапер:"):
+            logger.info(f"Ініціалізація {game_name} успішна.")
+        else:
+            logger.warning(f"Ініціалізація {game_name} не вдалася: {result[0]}")
+    
+    # Цикл планувальника (асинхронно)
     while True:
         # Чекаємо 15 хвилин
         await asyncio.sleep(15 * 60)
         
-        try:
-            new_combo = await asyncio.to_thread(scrape_for_combo)
-            
-            # Якщо результат не є повідомленням про помилку
-            if new_combo and not new_combo[0].startswith("Скрапер:") and not new_combo[0].startswith("Помилка HTTP:"):
-                # Оновлюємо глобальну змінну лише у разі успіху
-                GLOBAL_COMBO_CARDS[:] = new_combo
-                logger.info(f"Комбо оновлено планувальником: {GLOBAL_COMBO_CARDS}")
-            else:
-                logger.warning(f"Комбо не оновлено через помилку: {new_combo[0]}")
+        logger.info("Планувальник: Починаю періодичне оновлення комбо.")
+        
+        for game_name, url in COMBO_SOURCES.items():
+            try:
+                # Виконуємо синхронну функцію в окремому потоці
+                new_combo = await asyncio.to_thread(scrape_for_combo, game_name, url)
                 
-        except Exception as e:
-            logger.error(f"Критична помилка в планувальнику: {e}")
+                # Якщо результат не є повідомленням про помилку
+                if new_combo and not new_combo[0].startswith("Скрапер:") and not new_combo[0].startswith("Помилка HTTP:"):
+                    GLOBAL_COMBO_CARDS[game_name] = new_combo
+                    logger.info(f"Планувальник: Комбо для {game_name} оновлено.")
+                else:
+                    logger.warning(f"Планувальник: Комбо для {game_name} не оновлено. Причина: {new_combo[0]}")
+                    
+            except Exception as e:
+                logger.error(f"Критична помилка в планувальнику для {game_name}: {e}")
 
 if __name__ == "__main__":
     # Логіка для тестування скрапера локально
     print("--- Тестування Scraper ---")
-    result = scrape_for_combo()
-    print("Результат:", result)
-    if result and result[0].startswith("Скрапер:"):
-        print("Помилка: Необхідно оновити селектори в scrape_for_combo.")
+    for game_name, url in COMBO_SOURCES.items():
+        result = scrape_for_combo(game_name, url)
+        print(f"Результат для {game_name}: {result}")
     print("-------------------------")
