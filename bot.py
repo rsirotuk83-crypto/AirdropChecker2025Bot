@@ -10,7 +10,7 @@ from dotenv import load_dotenv
 from aiohttp import web 
 from aiogram.webhook.aiohttp_server import SimpleRequestHandler
 
-from aiogram import Bot, Dispatcher, types, F, Router # Router імпортовано
+from aiogram import Bot, Dispatcher, types, F, Router 
 from aiogram.enums import ParseMode
 from aiogram.filters import CommandStart, Command
 from aiogram.types import Message, CallbackQuery
@@ -23,9 +23,9 @@ try:
     from hamster_scraper import main_scheduler, GLOBAL_COMBO_CARDS, COMBO_SOURCES, scrape_for_combo
 except ImportError:
     # Заглушки, якщо скрепер не знайдено
-    logger.error("Критична помилка: Не вдалося імпортувати scraper. Фоновий планувальник не запуститься.")
+    logging.getLogger(__name__).error("Критична помилка: Не вдалося імпортувати scraper. Фоновий планувальник не запуститься.")
     async def main_scheduler():
-        logger.error("Фоновий планувальник не запущено. Скрепінг не працює.")
+        logging.getLogger(__name__).error("Фоновий планувальник не запущено. Скрепінг не працює.")
         await asyncio.sleep(3600)
     COMBO_SOURCES = {
         "TON Station": "https://miningcombo.com/ton-station/",
@@ -51,23 +51,27 @@ except (ValueError, TypeError):
     logger.warning("Змінна ADMIN_ID не встановлена або має неправильний формат.")
     ADMIN_ID = 0
 
-WEBHOOK_HOST = os.getenv("WEBHOOK_HOST") 
+# --- КРИТИЧНЕ ВИПРАВЛЕННЯ ДЛЯ WEBHOOK_HOST У RAILWAY ---
+# Намагаємося отримати хост з різних змінних оточення Railway
+WEBHOOK_HOST = os.getenv("WEBHOOK_HOST") or os.getenv("RAILWAY_STATIC_URL") or os.getenv("RAILWAY_PUBLIC_DOMAIN")
+
 WEBHOOK_PATH = "/webhook"
 WEB_SERVER_PORT = int(os.getenv("PORT", 8080)) 
 
 if WEBHOOK_HOST:
+    # WEBHOOK_HOST може містити http:// або https://, потрібно видалити
+    WEBHOOK_HOST = WEBHOOK_HOST.replace("https://", "").replace("http://", "").rstrip('/')
     WEBHOOK_URL = f"https://{WEBHOOK_HOST}{WEBHOOK_PATH}"
 else:
-    logger.critical("WEBHOOK_HOST не знайдено.")
+    logger.critical("WEBHOOK_HOST не знайдено. Webhook не може бути встановлено.")
     WEBHOOK_URL = None
 
 DATA_DIR = Path("/app/data") 
 COMBO_CARDS_FILE = DATA_DIR / "all_combo_cards.json"
 
 # --- ГЛОБАЛЬНА ІНІЦІАЛІЗАЦІЯ AIOGRAM ---
-# ЦЕЙ РЯДОК БУВ КРИТИЧНО ВАЖЛИВИМ І ВІДСУТНІМ:
 router = Router()
-dp: Dispatcher = None # Буде ініціалізовано в main()
+dp: Dispatcher = None 
 
 # --- ФУНКЦІЇ ЗБЕРІГАННЯ ДАНИХ (Persistence) ---
 def load_combo_cards() -> Dict[str, Union[List[str], List[str]]]:
@@ -89,7 +93,7 @@ def save_combo_cards(cards: Dict[str, Union[List[str], List[str]]]):
     except Exception as e:
         logger.error(f"Помилка при збереженні комбо-карток у файл: {e}")
 
-# --- КЛАВІАТУРИ ---
+# --- КЛАВІАТУРИ (не змінено) ---
 
 def get_admin_keyboard(game_name: str) -> types.InlineKeyboardMarkup:
     """Клавіатура для адміністратора, прив'язана до конкретної гри."""
@@ -113,7 +117,7 @@ def get_game_selection_keyboard(action_prefix: str) -> types.InlineKeyboardMarku
     
     return types.InlineKeyboardMarkup(inline_keyboard=keyboard)
 
-# --- УНІФІКОВАНА ФУНКЦІЯ ГОЛОВНОГО МЕНЮ ---
+# --- УНІФІКОВАНА ФУНКЦІЯ ГОЛОВНОГО МЕНЮ (не змінено) ---
 
 def get_main_menu_response(user_id: int) -> Dict[str, Any]:
     """Генерує повідомлення та клавіатуру для головного меню (для /start або повернення)."""
@@ -147,7 +151,7 @@ def get_main_menu_response(user_id: int) -> Dict[str, Any]:
     }
 
 
-# --- ХЕНДЛЕРИ КОМАНД ---
+# --- ХЕНДЛЕРИ КОМАНД (не змінено) ---
 
 @router.message(CommandStart())
 async def cmd_start(message: Message):
@@ -192,7 +196,7 @@ async def cmd_setcombo(message: Message):
     await message.answer(f"✅ Комбо для *{game_name}* встановлено вручну:\n{combo_list}", parse_mode=ParseMode.MARKDOWN)
 
 
-# --- ХЕНДЛЕРИ INLINE-КНОПОК (User & Admin) ---
+# --- ХЕНДЛЕРИ INLINE-КНОПОК (User & Admin) (не змінено) ---
 
 # Обробка повернення до головного меню
 @router.callback_query(F.data == "admin_main_menu")
@@ -213,7 +217,6 @@ async def process_main_menu_callback(callback: CallbackQuery):
 @router.callback_query(F.data == "show_info_selector")
 async def process_show_info_selector(callback: types.CallbackQuery):
     """Показує клавіатуру для вибору гри, про яку користувач хоче отримати інфо."""
-    # Припускаємо, що get_game_selection_keyboard("user_info") правильно визначена
     await callback.message.edit_text(
         "ℹ️ Виберіть гру, щоб дізнатися деталі про її щоденне комбо:",
         reply_markup=get_game_selection_keyboard("user_info")
@@ -260,7 +263,7 @@ async def process_user_get_combo(callback: types.CallbackQuery):
 async def process_user_info(callback: types.CallbackQuery):
     """Обробляє натискання 'Інфо' користувачем для конкретної гри."""
     
-    # Визначаємо заглушку для get_info_message, оскільки її немає у файлі.
+    # Визначаємо заглушку для get_info_message
     def get_info_message(game: str, url: str) -> str:
         return f"<b>Деталі про {game}</b>\n" \
                f"Це бот-перевіряльник щоденних комбо Web3 ігор.\n" \
@@ -325,6 +328,7 @@ async def process_admin_update(callback: types.CallbackQuery):
 
     await callback.message.edit_text(f"⏳ Запускаю ручний скрапінг *{game_name}*. Зачекайте...", parse_mode=ParseMode.MARKDOWN)
     
+    # Використовуємо scrape_for_combo
     new_combo = await asyncio.to_thread(scrape_for_combo, game_name, COMBO_SOURCES[game_name]) 
     
     if new_combo and not new_combo[0].startswith(("Скрапер:", "Помилка HTTP:")):
@@ -355,11 +359,15 @@ async def process_admin_toggle_global_access(callback: types.CallbackQuery):
 
 async def on_startup_webhook(bot: Bot) -> None:
     """Викликається при запуску. Встановлює Webhook."""
-    global dp # Потрібен доступ до глобального dp
+    global dp 
     if WEBHOOK_URL and dp:
         await bot(DeleteWebhook(drop_pending_updates=True))
         logger.info(f"Встановлюю Webhook на URL: {WEBHOOK_URL}")
-        await bot(SetWebhook(url=WEBHOOK_URL, allowed_updates=dp.resolve_used_update_types()))
+        # Telegram вимагає, щоб URL був HTTPS
+        if WEBHOOK_URL.startswith("https://"):
+            await bot(SetWebhook(url=WEBHOOK_URL, allowed_updates=dp.resolve_used_update_types()))
+        else:
+             logger.error(f"WEBHOOK_URL не є HTTPS: {WEBHOOK_URL}. Webhook не встановлено.")
     else:
         logger.error("Не вдалося встановити Webhook, оскільки WEBHOOK_URL або dp не визначено.")
 
@@ -387,9 +395,10 @@ async def cleanup_background_tasks(app: web.Application) -> None:
 async def init_webhook_server(bot: Bot) -> web.Application:
     """Асинхронно ініціалізує aiohttp Webhook сервер."""
     if not WEBHOOK_HOST:
+        # Це має бути перехоплено в main(), але для надійності залишаємо
         raise ValueError("WEBHOOK_HOST не знайдено.")
 
-    global dp # Використовуємо глобальний dp
+    global dp 
     if dp is None:
         raise RuntimeError("Dispatcher (dp) не був ініціалізований.")
 
@@ -414,7 +423,7 @@ def main() -> None:
         logger.critical("BOT_TOKEN не знайдено. Бот не може запуститися.")
         return
     if not WEBHOOK_HOST:
-        logger.critical("WEBHOOK_HOST не знайдено. Бот не може запуститися через Webhooks.")
+        logger.critical("WEBHOOK_HOST не знайдено (перевірте змінні оточення Railway: RAILWAY_STATIC_URL). Бот не може запуститися через Webhooks.")
         return
 
     DATA_DIR.mkdir(exist_ok=True)
@@ -422,10 +431,10 @@ def main() -> None:
     global GLOBAL_COMBO_CARDS
     GLOBAL_COMBO_CARDS = load_combo_cards()
 
-    global dp # Потрібно ініціалізувати глобальний dp
+    global dp 
     bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
     dp = Dispatcher()
-    dp.include_router(router) # Реєструємо наш роутер тут!
+    dp.include_router(router)
     
     try:
         logger.info(f"Запуск Webhook-сервера на http://0.0.0.0:{WEB_SERVER_PORT}{WEBHOOK_PATH}")
