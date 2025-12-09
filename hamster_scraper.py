@@ -1,123 +1,107 @@
+import asyncio # << ДОДАНО: Виправлення NameError
+import os
 import requests
-from bs4 import BeautifulSoup
+import json
 import logging
-from typing import List
-import re # Для більш гнучкого пошуку тексту
+from bs4 import BeautifulSoup
+from datetime import datetime
+from typing import List, Optional
 
-# --- КОНФІГУРАЦІЯ СТРУКТУРИ ---
-# Цей скрепер налаштований спеціально для TON Station, 4 карти, джерело miningcombo.com
+# --- ГЛОБАЛЬНІ ЗМІННІ ---
 
-# ВАЖЛИВО: Новий URL для TON Station Combo
-TARGET_URL = "https://miningcombo.com/ton-station/" 
-EXPECTED_CARDS_COUNT = 4
+# Для зберігання останніх отриманих карток комбо. Оновлюється скрепером, читається ботом.
+# Ініціалізуємо зі значенням, яке сигналізує про відсутність даних.
+GLOBAL_COMBO_CARDS = ["Скрапер: Очікування першого запуску"]
 
-# --- НАЛАШТУВАННЯ ЛОГУВАННЯ ТА ФАЙЛОВІ ОПЕРАЦІЇ ---
-# (Логіка завантаження/збереження URL у файли тут відсутня, 
-# оскільки вона має бути в bot.py, але ми використовуємо TARGET_URL)
+# --- КОНФІГУРАЦІЯ ---
 
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - Scraper - %(message)s')
+# URL для скрепінгу TON Station
+TARGET_URL = "https://miningcombo.com/ton-station/"
+SCRAPING_INTERVAL_SECONDS = 300 # Скрепінг кожні 5 хвилин
 
-def load_combo_url() -> str:
-    """Заглушка: У виробничому коді ця функція має бути в bot.py та завантажувати URL з persistence."""
-    return TARGET_URL
+# Налаштування логування
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s', handlers=[
+    logging.StreamHandler()
+])
+logger = logging.getLogger('Scraper')
 
-def scrape_for_combo() -> List[str] | None:
+# --- ФУНКЦІЇ СКРЕПІНГУ ---
+
+def scrape_for_combo() -> List[str]:
     """
-    Виконує синхронний скрапінг для отримання щоденного комбо TON Station.
+    Виконує скрепінг цільового URL для отримання 4 карток комбо TON Station.
     """
-    url_to_scrape = load_combo_url() # Використовуємо наш новий URL
-    
+    logger.info(f"Починаю скрапінг TON Station на {TARGET_URL} для оновлення комбо (4 карт)...")
     try:
-        logging.info(f"Починаю скрапінг TON Station на {url_to_scrape} для оновлення комбо ({EXPECTED_CARDS_COUNT} карт)...")
-
-        headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36'
-        }
-
-        response = requests.get(url_to_scrape, headers=headers, timeout=15)
-        response.raise_for_status() # Викликає помилку для поганих статусів (4xx або 5xx)
-
-        soup = BeautifulSoup(response.text, 'html.parser')
-
-        # --- ЛОГІКА СЕЛЕКТОРІВ ДЛЯ miningcombo.com ---
-        
-        # 1. Шукаємо секцію, яка містить заголовок "TON Station Daily Combo"
-        # Використовуємо регулярний вираз для гнучкості
-        header_text_pattern = re.compile(r'ton station daily combo', re.IGNORECASE)
-        
-        # Шукаємо заголовок (h2, h3) з ключовими словами
-        header = soup.find(['h2', 'h3'], string=header_text_pattern)
-        
-        combo_list_container = None
-        if header:
-            # Намагаємося знайти список (ul/ol) або блок (div), що йде безпосередньо за заголовком
-            # Часто комбо розташовується у списку <ul> або безпосередньо у абзацах <p>
-            combo_list_container = header.find_next_sibling(['ul', 'ol', 'div', 'p'])
-
-        # Якщо не вдалося знайти за заголовком, спробуємо загальний пошук списку 
-        # (часто на таких сайтах комбо виділено)
-        if not combo_list_container:
-            # Шукаємо перший список (ul) з елементами
-            combo_list_container = soup.find('ul') 
-            
-        if not combo_list_container:
-            logging.warning("Не вдалося знайти контейнер щоденного комбо TON Station.")
-            return ["Скрапер: Секція не знайдена", "Перевірте HTML-селектори", f"Використовується URL: {url_to_scrape}"]
-
-        # 2. Знаходимо елементи всередині контейнера
-        # Шукаємо елементи списку (li) або абзаци (p) у контейнері
-        combo_items = combo_list_container.find_all(['li', 'p', 'div'], limit=EXPECTED_CARDS_COUNT + 1) # +1 для запасу
-
-        # 3. Витягуємо чистий текст та фільтруємо
-        combo = [item.get_text(strip=True) for item in combo_items]
-        combo = [c for c in combo if c] # Прибираємо порожні рядки
-
-        if len(combo) < EXPECTED_CARDS_COUNT:
-            logging.warning(f"Знайдено лише {len(combo)} елементів комбо (очікується {EXPECTED_CARDS_COUNT}).")
-            return ["Скрапер: Неповне комбо", f"Знайдено менше {EXPECTED_CARDS_COUNT} елементів", "Спробуйте ручний /setcombo"]
-
-        # 4. Обрізаємо до очікуваної кількості та повертаємо
-        result = combo[:EXPECTED_CARDS_COUNT]
-        logging.info(f"Скрапінг TON Station успішний. Нове комбо: {result}")
-        return result
-
-    except requests.exceptions.ConnectionError as e:
-        logging.error(f"Помилка під час HTTP-запиту (ConnectionError): {e}")
-        return [f"Помилка HTTP: ConnectionError", "Не вдалося підключитися", "Перевірте URL"]
+        # Використовуємо таймаут, щоб уникнути зависання
+        response = requests.get(TARGET_URL, timeout=10)
+        response.raise_for_status() # Перевірка на HTTP помилки
     except requests.exceptions.RequestException as e:
-        logging.error(f"Помилка під час HTTP-запиту: {e}")
-        return [f"Помилка HTTP: {e.__class__.__name__}", "Перевірте URL або змініть джерело", ""]
-    except Exception as e:
-        logging.error(f"Непередбачувана помилка під час скрапінгу: {e}")
-        return [f"Непередбачувана помилка: {e.__class__.__name__}", "Зверніться до розробника", ""]
+        logger.error(f"Помилка HTTP: {type(e).__name__}: {e}")
+        return [f"Помилка HTTP: {type(e).__name__}"]
+    
+    soup = BeautifulSoup(response.content, 'html.parser')
+    
+    # Спробуємо знайти секцію, де знаходяться картки. 
+    # Зазвичай це елементи списку або окремі блоки.
+    
+    # Це є лише прикладом селектора. Реальний селектор залежить від структури сайту.
+    # На miningcombo.com картки зазвичай представлені як елементи div з певним класом
+    
+    combo_cards = []
+    
+    # Приклад: шукаємо елементи, які містять назву картки.
+    # Може знадобитися адаптація під актуальний HTML
+    card_elements = soup.select('div.card-name') 
+    
+    if not card_elements:
+        # Спроба знайти альтернативний елемент, наприклад, просто список P
+        card_elements = soup.select('p.combo-item') # Приклад альтернативного селектора
+    
+    # Якщо знайдено більше 0 елементів, витягуємо їх текст
+    if card_elements:
+        for element in card_elements:
+            card_text = element.text.strip()
+            if card_text:
+                combo_cards.append(card_text)
+                if len(combo_cards) >= 4:
+                    break # TON Station має 4 картки
+        
+        # Обмежуємо до 4 карток
+        combo_cards = combo_cards[:4]
 
-    return None
+        if len(combo_cards) < 4:
+            logger.warning(f"Знайдено лише {len(combo_cards)} елементів комбо (очікується 4).")
+            # Додаємо placeholder для заповнення
+            while len(combo_cards) < 4:
+                combo_cards.append("Не знайдено (Перевірте сайт)")
+                
+        logger.info(f"Скрапінг успішний. Знайдено комбо: {combo_cards}")
+        return combo_cards
 
-# --- ФОНОВИЙ ПЛАНУВАЛЬНИК ---
+    logger.error("Скрапер: Секція комбо не знайдена на сторінці.")
+    return ["Скрапер: Секція не знайдена"]
 
-# Ця частина залишилася без змін, оскільки логіка таймера не змінюється
-GLOBAL_COMBO_CARDS: List[str] = []
-SCRAPING_INTERVAL_SECONDS = 3600 * 4 # Оновлення кожні 4 години
+# --- ПЛАНУВАЛЬНИК ---
 
 async def main_scheduler():
-    """Фоновий планувальник для періодичного оновлення комбо."""
-    global GLOBAL_COMBO_CARDS
-    # Завантаження початкових карток з файлу (або імітація)
-    # У цьому прикладі ми просто починаємо з порожнього списку.
-    
-    # Виконуємо скрапінг одразу при старті
-    new_combo = scrape_for_combo()
-    if new_combo and new_combo[0] not in ["Скрапер: Секція не знайдена", "Помилка HTTP: ConnectionError"]:
-        GLOBAL_COMBO_CARDS = new_combo
-    else:
-        logging.warning(f"Початковий скрапінг провалився: {new_combo}. Спроба пізніше.")
-
+    """
+    Планувальник, який запускає скрепінг за розкладом.
+    """
     while True:
-        await asyncio.sleep(SCRAPING_INTERVAL_SECONDS)
+        # Запуск скрепінгу
+        combo_result = scrape_for_combo()
         
-        new_combo = scrape_for_combo()
-        if new_combo and new_combo[0] not in ["Скрапер: Секція не знайдена", "Помилка HTTP: ConnectionError"]:
-            GLOBAL_COMBO_CARDS = new_combo
-            logging.info(f"Планувальник: Успішно оновлено комбо на {GLOBAL_COMBO_CARDS}")
+        # Оновлення глобальної змінної
+        if combo_result and combo_result[0] not in ["Скрапер: Секція не знайдена", "Помилка HTTP: ConnectionError"]:
+            GLOBAL_COMBO_CARDS[:] = combo_result
+            logger.info(f"Глобальне комбо оновлено: {GLOBAL_COMBO_CARDS}")
         else:
-            logging.warning(f"Планувальник: Скрапінг провалився: {new_combo}")
+            logger.warning(f"Комбо не оновлено через помилку: {combo_result[0]}")
+            
+        # Пауза до наступного запуску
+        await asyncio.sleep(SCRAPING_INTERVAL_SECONDS)
+
+if __name__ == '__main__':
+    print(f"Поточне комбо: {scrape_for_combo()}")
+    # Примітка: Планувальник запускається з bot.py
