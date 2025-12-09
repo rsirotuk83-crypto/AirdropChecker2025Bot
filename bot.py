@@ -1,111 +1,131 @@
-import asyncio
-import logging
 import os
-
-from aiogram import Bot, Dispatcher, Router
-from aiogram.enums import ParseMode
-from aiogram.filters import CommandStart
-from aiogram.types import Message
-from aiogram.webhook.aiohttp_server import SimpleRequestHandler, setup_application
-
+import asyncio
+import json
+import logging
+import httpx
+from datetime import datetime
 from aiohttp import web
 
+from aiogram import Bot, Dispatcher, types, F
+from aiogram.filters import CommandStart
+from aiogram.client.default import DefaultBotProperties
+from aiogram.enums import ParseMode
+from aiogram.webhook.aiohttp_server import SimpleRequestHandler
 
-# =========================
-# LOGGING
-# =========================
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s - %(levelname)s - %(message)s",
-)
-log = logging.getLogger(__name__)
+logging.basicConfig(level=logging.INFO)
 
-
-# =========================
-# ENV
-# =========================
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 ADMIN_ID = int(os.getenv("ADMIN_ID", "0"))
-WEBHOOK_HOST = os.getenv("WEBHOOK_HOST")
+WEBHOOK_HOST = os.getenv("WEBHOOK_HOST")  # https://airdropchecker2025bot-production.up.railway.app
 PORT = int(os.getenv("PORT", "8080"))
 
+if not BOT_TOKEN or not WEBHOOK_HOST:
+    raise RuntimeError("BOT_TOKEN або WEBHOOK_HOST не встановлено!")
 
-if not BOT_TOKEN:
-    raise RuntimeError("❌ BOT_TOKEN not set")
-if not WEBHOOK_HOST:
-    raise RuntimeError("❌ WEBHOOK_HOST not set")
-
-
-WEBHOOK_PATH = f"/webhook/{BOT_TOKEN}"
+WEBHOOK_PATH = "/webhook"
 WEBHOOK_URL = f"{WEBHOOK_HOST}{WEBHOOK_PATH}"
 
-
-# =========================
-# BOT / DP
-# =========================
-bot = Bot(token=BOT_TOKEN, parse_mode=ParseMode.HTML)
+bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
 dp = Dispatcher()
-router = Router()
 
+# === Дані в Volume ===
+DATA_FILE = "/app/data/db.json"
+combo_text = "Комбо ще не встановлено"
+source_url = ""
 
-# =========================
-# HANDLERS
-# =========================
-@router.message(CommandStart())
-async def start_handler(message: Message):
-    await message.answer(
-        "👋 <b>Вітаю!</b>\n\n"
-        "🎮 Тут ти отримуєш актуальні комбо для TON-ігор\n"
-        "✅ швидко\n"
-        "✅ без пошуку по чатах\n\n"
-        "👉 Сьогоднішнє комбо доступне преміум-підписникам"
-    )
+def load():
+    global combo_text, source_url
+    if os.path.exists(DATA_FILE):
+        try:
+            with open(DATA_FILE, "r", encoding="utf-8") as f:
+                d = json.load(f)
+                combo_text = d.get("combo", combo_text)
+                source_url = d.get("url", "")
+        except: pass
 
+def save():
+    os.makedirs("/app/data", exist_ok=True)
+    with open(DATA_FILE, "w", encoding="utf-8") as f:
+        json.dump({"combo": combo_text, "url": source_url}, f)
 
-dp.include_router(router)
+load()
 
+# === Оновлення ===
+async def fetch():
+    global combo_text
+    if not source_url: return
+    try:
+        async with httpx.AsyncClient(timeout=15) as c:
+            r = await c.get(source_url)
+            if r.status_code == 200:
+                new = r.text.strip()
+                if new and new != combo_text:
+                    combo_text = new
+                    save()
+                    if ADMIN_ID:
+                        await bot.send_message(ADMIN_ID, "Комбо оновлено!")
+    except: pass
 
-# =========================
-# STARTUP / SHUTDOWN
-# =========================
-async def on_startup(bot: Bot):
-    # 🔍 самоперевірка токена
-    me = await bot.get_me()
-    log.info(f"✅ Bot authorized as @{me.username}")
+async def scheduler():
+    await asyncio.sleep(30)
+    while True:
+        await fetch()
+        await asyncio.sleep(24 * 3600)
 
-    await bot.set_webhook(
-        WEBHOOK_URL,
-        drop_pending_updates=True
-    )
-    log.info(f"✅ Webhook set: {WEBHOOK_URL}")
+# === Хендлери ===
+@dp.message(CommandStart())
+async def start(m: types.Message):
+    kb = [[types.InlineKeyboardButton(text="Отримати комбо", callback_data="getcombo")]]
+    if m.from_user.id == ADMIN_ID:
+        kb.append([types.InlineKeyboardButton(text="Адмінка", callback_data="admin")])
+    await m.answer("Привіт! @CryptoComboDaily\nНатисни кнопку:", reply_markup=types.InlineKeyboardMarkup(inline_keyboard=kb))
 
+@dp.callback_query(F.data == "getcombo")
+async def show_combo(c: types.CallbackQuery):
+    await c.message.edit_text(f"<b>Комбо на {datetime.now():%d.%m.%Y}</b>\n\n{combo_text}", parse_mode="HTML")
 
-async def on_shutdown(bot: Bot):
-    await bot.delete_webhook()
-    await bot.session.close()
-    log.info("🛑 Bot shutdown")
+@dp.callback_query(F.data == "admin")
+async def admin_panel(c: types.CallbackQuery):
+    if c.from_user.id != ADMIN_ID: return
+    await c.message.edit_text("Адмінка", reply_markup=types.InlineKeyboardMarkup(inline_keyboard=[
+        [types.InlineKeyboardButton(text="Оновити зараз", callback_data="force")]
+    ]))
 
+@dp.callback_query(F.data == "force")
+async def force(c: types.CallbackQuery):
+    if c.from_user.id != ADMIN_ID: return
+    await fetch()
+    await c.answer("Оновлено!")
 
-dp.startup.register(on_startup)
-dp.shutdown.register(on_shutdown)
+@dp.message(F.text.startswith("/seturl"))
+async def seturl(m: types.Message):
+    if m.from_user.id != ADMIN_ID: return
+    try:
+        global source_url
+        source_url = m.text.split(maxsplit=1)[1]
+        save()
+        await m.answer(f"URL збережено:\n{source_url}")
+        await fetch()
+    except:
+        await m.answer("Використання: /seturl https://...")
 
+@dp.message(F.text.startswith("/setcombo"))
+async def setcombo(m: types.Message):
+    if m.from_user.id != ADMIN_ID: return
+    global combo_text
+    combo_text = m.text.partition(" ")[2] or "Порожнє"
+    save()
+    await m.answer("Комбо збережено")
 
-# =========================
-# WEB APP
-# =========================
-def main():
-    app = web.Application()
+# === Webhook ===
+async def on_startup(_):
+    await bot.set_webhook(WEBHOOK_URL)
+    asyncio.create_task(scheduler())
+    logging.info(f"Webhook встановлено: {WEBHOOK_URL}")
 
-    SimpleRequestHandler(
-        dispatcher=dp,
-        bot=bot,
-    ).register(app, path=WEBHOOK_PATH)
-
-    setup_application(app, dp, bot=bot)
-
-    log.info(f"🚀 Starting webhook server on port {PORT}")
-    web.run_app(app, host="0.0.0.0", port=PORT)
-
+app = web.Application()
+app.on_startup.append(on_startup)
+SimpleRequestHandler(dispatcher=dp, bot=bot).register(app, path=WEBHOOK_PATH)
 
 if __name__ == "__main__":
-    main()
+    web.run_app(app, host="0.0.0.0", port=PORT)
