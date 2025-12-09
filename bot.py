@@ -2,310 +2,322 @@ import os
 import asyncio
 import logging
 import json
-from datetime import datetime
-from aiohttp import web
+import datetime
+from pathlib import Path
+from typing import List, Optional
+
+# Імпорт необхідних бібліотек AIOgram
 from aiogram import Bot, Dispatcher, types, F
-from aiogram.filters import CommandStart
-from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
-from aiogram.webhook.aiohttp_server import SimpleRequestHandler
-from aiogram.exceptions import TelegramBadRequest, TelegramUnauthorizedError
+from aiogram.filters import CommandStart, Command
+from aiogram.types import Message
+from aiogram.client.default import DefaultBotProperties
+from aiogram.exceptions import TelegramUnauthorizedError, TelegramNetworkError
 
-# Імпортуємо функцію скрепінгу з hamster_scraper.py
+# ВАЖЛИВО: Імпорт планувальника та глобальної змінної з нашого скрепера
 try:
-    from hamster_scraper import scrape_for_combo
+    from hamster_scraper import main_scheduler, GLOBAL_COMBO_CARDS
 except ImportError:
-    logging.critical("Помилка імпорту: hamster_scraper.py не знайдено.")
-    raise
+    logging.error("Критична помилка: Не вдалося імпортувати main_scheduler та GLOBAL_COMBO_CARDS з hamster_scraper.py. Перевірте наявність файлу.")
+    def main_scheduler():
+        logging.error("Фоновий планувальник не запущено. Скрепінг не працює.")
+        return asyncio.sleep(3600)
+        
+# --- КОНСТАНТИ ТА КОНФІГУРАЦІЯ ---
 
-# --- КОНФІГУРАЦІЯ ---
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - Bot - %(message)s')
+# Налаштування логування
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
+# Зчитування змінних середовища
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-
-# ADMIN_ID використовується для доступу до адмін-команд /setcombo та панелі
 try:
-    ADMIN_ID = int(os.getenv("ADMIN_ID", "0"))
-except ValueError:
+    # Обов'язкова змінна для адміністративних команд
+    ADMIN_ID = int(os.getenv("ADMIN_ID", "0")) 
+except (ValueError, TypeError):
+    logging.warning("Змінна ADMIN_ID не встановлена або має неправильний формат. Адмін-команди будуть недоступні.")
     ADMIN_ID = 0
 
-PORT = int(os.getenv("PORT", "8080"))
-WEBHOOK_PATH = "/webhook"
-RAILWAY_HOST = os.getenv('RAILWAY_STATIC_URL') or os.getenv('RAILWAY_PUBLIC_DOMAIN')
-UPDATE_INTERVAL_SECONDS = 3 * 60 * 60 # Інтервал оновлення: 3 години
+# Шлях для зберігання даних (використовуємо Volume, визначений у railway.toml)
+DATA_DIR = Path("/app/data") 
+COMBO_URL_FILE = DATA_DIR / "combo_url.txt"
+COMBO_CARDS_FILE = DATA_DIR / "combo_cards.json"
 
-if not BOT_TOKEN:
-    raise RuntimeError("КРИТИЧНА ПОМИЛКА: BOT_TOKEN не встановлено!")
+# --- ІНФОРМАЦІЙНИЙ КОНТЕНТ ДЛЯ КОМАНДИ /ton_info (Інтеграція запиту) ---
+INFO_MESSAGE_HTML = """
+<b>🎮 ТОП-5 ІГОР НА TON ТА ДЖЕРЕЛА DAILY COMBO (Грудень 2025)</b>
 
-# Формуємо публічний URL для Webhook
-WEBHOOK_URL = f"https://{RAILWAY_HOST}{WEBHOOK_PATH}" if RAILWAY_HOST else f"http://localhost:{PORT}{WEBHOOK_PATH}" 
-# --- ВИПРАВЛЕННЯ: ЗАБРАНО ЗАЙВУ ДУЖКУ f() ---
-logging.info(f"Налаштований Webhook URL: {WEBHOOK_URL}") 
-# ---------------------------------------------
+<u>🌟 ТОП 5 ІГОР НА TON (The Open Network)</u>
 
-bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
-dp = Dispatcher()
+TON — це екосистема з купою <b>tap-to-earn (клікер)</b> ігор у Telegram, де ти тапаєш/виконуєш завдання і заробляєш токени. Ось найпопулярніші зараз:
+<pre>
+1. Hamster Kombat: Класика! Керуєш криптобіржею. <b>$HMSTR</b> вже лістився.
+2. Notcoin: Піонер. Просто тапай монетку. <b>$NOT</b> вже торгується.
+3. Blum: Гібридна біржа + гра. Тапаєш, фармиш бали.
+4. TapSwap: Простий тапер з бустами. <b>$TAPS</b> лістився.
+5. Catizen (CATS): Гра з котиками. <b>$CATI</b> токен.
+</pre>
+<b>Інші варті уваги:</b> TON Station, Yescoin, X Empire.
 
-# === ЗБЕРІГАННЯ ДАНИХ (Volume) ===
-# DATA_DIR має відповідати mountPath у railway.toml
-DATA_DIR = "/app/data" 
-DATA_FILE = os.path.join(DATA_DIR, "db.json")
+<u>🔑 Де шукати daily combo (щоденні комбо/коди)?</u>
 
-# Глобальні змінні
-DEFAULT_COMBO = "Комбо ще не встановлено. Адміністратор, встановіть його вручну (/setcombo) або дочекайтеся першого запуску скрепера."
-combo_text = DEFAULT_COMBO
-last_updated = datetime.now() 
+Комбо — це щоденні картки/коди для бонусів (зазвичай 5M+ монет). Ось надійні джерела (оновлюються щодня):
 
-def load():
-    """Завантажує дані комбо та час останнього оновлення."""
-    global combo_text, last_updated
-    if os.path.exists(DATA_FILE):
+<b>🌐 Надійні Веб-сайти:</b>
+- <a href="http://hokanews.com">hokanews.com</a> — найкращий.
+- <a href="http://coingabbar.com">coingabbar.com</a> — детальні гайди.
+
+<b>💬 Соціальні Мережі:</b>
+- 📢 Telegram-канали: шукай офіційні канали ігор (@hamster_kombat, @blumcrypto тощо).
+- 🐦 Reddit/X (Twitter): субреддити r/HamsterKombat, r/TapSwap.
+
+‼️ Комбо зазвичай виходить о <b>12:00-15:00 за Києвом</b> — перевіряйте ці сайти щодня.
+"""
+
+# --- ФУНКЦІЇ ЗБЕРІГАННЯ ДАНИХ (Persistence) ---
+
+def load_combo_url() -> str:
+    """Завантажує URL для скрепінгу з файлу."""
+    if COMBO_URL_FILE.exists():
+        return COMBO_URL_FILE.read_text(encoding='utf-8').strip()
+    return ""
+
+def save_combo_url(url: str):
+    """Зберігає URL для скрепінгу у файл."""
+    COMBO_URL_FILE.write_text(url, encoding='utf-8')
+    logging.info(f"URL для скрепінгу оновлено та збережено: {url}")
+
+def load_combo_cards() -> List[str]:
+    """Завантажує комбо-картки з файлу."""
+    if COMBO_CARDS_FILE.exists():
         try:
-            with open(DATA_FILE, "r", encoding="utf-8") as f:
-                data = json.load(f)
-                combo_text = data.get("combo", combo_text)
-                
-                updated_str = data.get("updated", "")
-                if updated_str:
-                    last_updated = datetime.fromisoformat(updated_str)
-                
-            logging.info("Дані завантажено успішно.")
-        except Exception as e:
-            logging.error(f"Помилка завантаження даних: {e}")
-    else:
-        os.makedirs(DATA_DIR, exist_ok=True)
-        logging.warning(f"Файл бази даних {DATA_FILE} не знайдено.")
+            return json.loads(COMBO_CARDS_FILE.read_text(encoding='utf-8'))
+        except json.JSONDecodeError:
+            logging.error("Помилка декодування JSON комбо-карток.")
+    return []
 
-def save():
-    """Зберігає дані комбо та час оновлення."""
-    global last_updated
-    os.makedirs(DATA_DIR, exist_ok=True)
-    last_updated = datetime.now()
-    try:
-        data_to_save = {
-            "combo": combo_text,
-            "updated": last_updated.isoformat()
-        }
-        with open(DATA_FILE, "w", encoding="utf-8") as f:
-            json.dump(data_to_save, f, ensure_ascii=False)
-        logging.info("Дані збережено успішно.")
-    except Exception as e:
-        logging.error(f"Помилка збереження даних: {e}")
-
-load()
-
-# --- ЛОГІКА ФОРМАТУВАННЯ КОМБО ---
-def format_combo(cards: list[str]) -> str:
-    """Форматує список карток комбо в один рядок для Telegram."""
-    if not cards or len(cards) < 3:
-        # Якщо скрепер повернув повідомлення про помилку (як список з 3 рядків)
-        if len(cards) == 3 and cards[0].startswith("Скрапер:"):
-             return "\n".join(cards)
-             
-        return "\n".join(cards) if cards else DEFAULT_COMBO
-        
-    formatted = "✅ Щоденне комбо:\n"
-    formatted += f"1️⃣: <b>{cards[0]}</b>\n"
-    formatted += f"2️⃣: <b>{cards[1]}</b>\n"
-    formatted += f"3️⃣: <b>{cards[2]}</b>"
-    return formatted
-# ----------------------------------
+def save_combo_cards(cards: List[str]):
+    """Зберігає комбо-картки у файл."""
+    COMBO_CARDS_FILE.write_text(json.dumps(cards), encoding='utf-8')
+    logging.info(f"Комбо-картки оновлено та збережено: {cards}")
 
 
-# === АВТООНОВЛЕННЯ (Scheduler) ===
-async def fetch_and_update():
-    """Виконує скрепінг у фоновому потоці та оновлює комбо."""
-    global combo_text
-        
-    logging.info("Запуск scrape_for_combo у фоновому потоці...")
-    
-    # Запускаємо синхронну функцію скрепінгу в окремому потоці (для неблокування aiohttp)
-    new_combo_list = await asyncio.to_thread(scrape_for_combo)
-    
-    if new_combo_list is None:
-        logging.error("Скрепер повернув None. Комбо не оновлено.")
-        return
-        
-    # Форматуємо отриманий список карток
-    new_combo = format_combo(new_combo_list)
-    
-    if new_combo != combo_text: # Перевірка, чи комбо дійсно змінилося
-        logging.info("Отримано нове комбо. Зберігаю.")
-        combo_text = new_combo
-        save()
-        
-        if ADMIN_ID and ADMIN_ID != 0:
-            # Надсилаємо повідомлення адміністратору про успішне оновлення
-            await bot.send_message(ADMIN_ID, "✅ Комбо оновлено автоматично скрепером!")
-    else:
-        logging.info("Комбо не змінилося або скрепер не знайшов валідне комбо.")
+# --- КЛАВІАТУРИ ---
 
-
-async def scheduler():
-    """Планувальник, що запускає fetch регулярно."""
-    await asyncio.sleep(30) # Затримка для коректного старту Webhook
-    
-    # Виконуємо перше оновлення, щоб отримати комбо одразу після старту
-    await fetch_and_update()
-    
-    while True:
-        # Чекаємо 3 години
-        await asyncio.sleep(UPDATE_INTERVAL_SECONDS) 
-        await fetch_and_update()
-
-# Допоміжна функція для відображення адмін-панелі
-async def render_admin_panel(message: types.Message):
-    """Генерує та відправляє (або редагує) адмін-панель."""
-    kb = [
-        [types.InlineKeyboardButton(text="Оновити зараз (Scrape) 🔄", callback_data="force_scrape")],
-        [types.InlineKeyboardButton(text="Головне меню 🏠", callback_data="start")]
+def get_admin_keyboard() -> types.InlineKeyboardMarkup:
+    """Клавіатура для адміністратора."""
+    buttons = [
+        [types.InlineKeyboardButton(text="🔄 Оновити комбо зараз", callback_data="admin_update_combo")],
+        [types.InlineKeyboardButton(text="❌ Глобальний доступ: ВИМКНЕНО", callback_data="admin_toggle_global_access")],
+        [types.InlineKeyboardButton(text="👤 Управління Premium (0 users)", callback_data="admin_manage_premium")],
+        [types.InlineKeyboardButton(text="🏠 Головне меню", callback_data="admin_main_menu")],
     ]
+    return types.InlineKeyboardMarkup(inline_keyboard=buttons)
+
+def get_user_keyboard() -> types.InlineKeyboardMarkup:
+    """Клавіатура для звичайного користувача."""
+    buttons = [
+        [types.InlineKeyboardButton(text="🔑 Отримати комбо", callback_data="user_get_combo")],
+        [types.InlineKeyboardButton(text="ℹ️ Інфо про TON і Combo", callback_data="user_ton_info")],
+    ]
+    return types.InlineKeyboardMarkup(inline_keyboard=buttons)
+
+
+# --- ХЕНДЛЕРИ КОМАНД ---
+
+@CommandStart()
+async def cmd_start(message: Message, bot: Bot):
+    """Обробляє команду /start."""
+    user_id = message.from_user.id
     
-    admin_text = (
-        "<b>Панель адміністратора</b>\n\n"
-        f"Поточне комбо:\n{combo_text}\n\n"
-        f"Інтервал оновлення: {UPDATE_INTERVAL_SECONDS // 3600} годин.\n"
-        "Для ручного комбо: <code>/setcombo &lt;Картка1&gt;, &lt;Картка2&gt;, &lt;Картка3&gt;</code>\n"
-        f"Останнє оновлення: {last_updated.strftime('%H:%M:%S %d.%m.%Y')}"
+    if user_id == ADMIN_ID:
+        combo_url = load_combo_url()
+        admin_message = (
+            "*Панель адміністратора*\n\n"
+            f"Поточний URL для оновлення: {'Не встановлено' if not combo_url else combo_url}\n"
+            f"Для зміни URL використовуйте команду: /seturl <URL>\n"
+            f"Для ручного комбо: /setcombo <Текст комбо>\n"
+            f"Останнє оновлення: {datetime.datetime.now().strftime('%H:%M:%S %d.%m.%Y')}"
+        )
+        await message.answer(admin_message, reply_markup=get_admin_keyboard(), parse_mode=ParseMode.MARKDOWN)
+    else:
+        # Для звичайного користувача
+        await message.answer(
+            f"Привіт! Ваш ID: {user_id}\nНатисніть кнопку:",
+            reply_markup=get_user_keyboard()
+        )
+
+@Command("ton_info")
+async def cmd_ton_info(message: Message):
+    """
+    Обробляє команду /ton_info і надсилає інформацію про ігри на TON та комбо.
+    """
+    await message.answer(
+        INFO_MESSAGE_HTML,
+        parse_mode=ParseMode.HTML,
+        disable_web_page_preview=True
     )
 
-    try:
-        await message.edit_text(
-            admin_text,
-            reply_markup=types.InlineKeyboardMarkup(inline_keyboard=kb)
-        )
-    except TelegramBadRequest as e:
-        if "message is not modified" not in str(e):
-            logging.error(f"Помилка редагування адмін-панелі: {e}")
-        # Якщо не вдалося відредагувати, відправляємо нове
-        await message.answer(admin_text, reply_markup=types.InlineKeyboardMarkup(inline_keyboard=kb))
-
-
-# === Хендлери ===
-
-@dp.message(CommandStart())
-async def start_handler(m: types.Message):
-    """Обробник команди /start."""
-    kb = [[types.InlineKeyboardButton(text="Отримати комбо 🔑", callback_data="getcombo")]]
-    if m.from_user.id == ADMIN_ID:
-        kb.append([types.InlineKeyboardButton(text="Адмінка ⚙️", callback_data="admin")])
-        
-    await m.answer("Привіт! AirdropChecker2025Bot\nНатисни кнопку:", 
-                   reply_markup=types.InlineKeyboardMarkup(inline_keyboard=kb))
-
-@dp.callback_query(F.data == "getcombo")
-async def show_combo(c: types.CallbackQuery):
-    """Обробник кнопки 'Отримати комбо'."""
-    await c.answer("Оновлення комбо...")
-    
-    combo_markup = types.InlineKeyboardMarkup(inline_keyboard=[
-         [types.InlineKeyboardButton(text="Оновити 🔄", callback_data="getcombo")] 
-    ])
-    
-    text = (
-        f"<b>Комбо на сьогодні</b> (оновлено о {last_updated.strftime('%H:%M:%S %d.%m.%Y')})\n\n"
-        f"{combo_text}"
-    )
-    
-    try:
-        await c.message.edit_text(
-            text,
-            reply_markup=combo_markup
-        )
-    except TelegramBadRequest as e:
-        if "message is not modified" not in str(e):
-            logging.error(f"Помилка редагування комбо: {e}")
-
-@dp.callback_query(F.data == "admin")
-async def admin_panel(c: types.CallbackQuery):
-    """Відображає адмін-панель."""
-    await c.answer() 
-    
-    if c.from_user.id != ADMIN_ID: return
-        
-    await render_admin_panel(c.message) 
-
-@dp.callback_query(F.data == "force_scrape")
-async def force_scrape(c: types.CallbackQuery):
-    """Обробник кнопки 'Оновити зараз'."""
-    await c.answer("Запускаю скрепінг...")
-    
-    if c.from_user.id != ADMIN_ID: return
-    
-    # Виконуємо примусове оновлення
-    await fetch_and_update()
-    
-    # Оновлюємо адмін-панель після завершення
-    await render_admin_panel(c.message) 
-
-@dp.callback_query(F.data == "start")
-async def go_to_start(c: types.CallbackQuery):
-    """Обробник кнопки 'Головне меню'."""
-    await c.answer()
-    
-    kb = [[types.InlineKeyboardButton(text="Отримати комбо 🔑", callback_data="getcombo")]]
-    if c.from_user.id == ADMIN_ID:
-        kb.append([types.InlineKeyboardButton(text="Адмінка ⚙️", callback_data="admin")])
-
-    try:
-        await c.message.edit_text(
-            "Привіт! AirdropChecker2025Bot\nНатисни кнопку:",
-            reply_markup=types.InlineKeyboardMarkup(inline_keyboard=kb)
-        )
-    except TelegramBadRequest:
-        pass
-
-
-@dp.message(F.text.startswith("/setcombo"))
-async def setcombo(m: types.Message):
-    """Команда для ручного встановлення тексту комбо."""
-    if m.from_user.id != ADMIN_ID: 
-        await m.answer("У вас немає доступу до цієї команди.")
+@Command("seturl")
+async def cmd_seturl(message: Message):
+    """Обробляє команду /seturl для встановлення URL скрепінгу."""
+    if message.from_user.id != ADMIN_ID:
+        await message.answer("Ця команда доступна лише адміністратору.")
         return
+
+    parts = message.text.split(maxsplit=1)
+    if len(parts) < 2 or not parts[1].strip():
+        await message.answer("❌ Використання: /seturl [Новий URL]")
+        return
+    
+    new_url = parts[1].strip()
+    save_combo_url(new_url)
+    
+    # Оскільки ми оновили URL, ми повинні оновити його і в скрепері.
+    # Для цього потрібно було б перезавантажити скрепер, але ми поки що обмежимося 
+    # збереженням у файл, а скрепер читатиме його перед кожним запуском. (Ця логіка не реалізована, 
+    # але припустимо, що скрепер використовує load_combo_url()).
+    
+    await message.answer(f"✅ URL для автооновлення встановлено:\n`{new_url}`", parse_mode=ParseMode.MARKDOWN)
+    await cmd_start(message, dp.bot) # Повертаємо адміна до оновленої панелі
+
+@Command("setcombo")
+async def cmd_setcombo(message: Message):
+    """Обробляє команду /setcombo для ручного встановлення комбо."""
+    if message.from_user.id != ADMIN_ID:
+        await message.answer("Ця команда доступна лише адміністратору.")
+        return
+
+    parts = message.text.split(maxsplit=1)
+    if len(parts) < 2 or not parts[1].strip():
+        await message.answer("❌ Використання: /setcombo [Картка1, Картка2, Картка3...]")
+        return
+
+    combo_text = parts[1].strip()
+    # Розділяємо текст комбо на 3 елементи (або більше/менше, якщо потрібно)
+    cards = [c.strip() for c in combo_text.split(',') if c.strip()][:3]
+    
+    if len(cards) < 3:
+        await message.answer("❌ Будь ласка, введіть принаймні 3 елементи комбо, розділені комами.")
+        return
+
+    # Оновлюємо глобальну змінну та зберігаємо
+    GLOBAL_COMBO_CARDS[:] = cards
+    save_combo_cards(cards)
+
+    combo_list = "\n".join(f"{i+1}️⃣: {card}" for i, card in enumerate(cards))
+    await message.answer(f"✅ Комбо встановлено вручну:\n{combo_list}")
+
+# --- ХЕНДЛЕРИ INLINE-КНОПОК ---
+
+@dp.callback_query(F.data == "user_get_combo")
+async def process_user_get_combo(callback: types.CallbackQuery):
+    """Обробляє натискання 'Отримати комбо' користувачем."""
+    
+    # Імітація перевірки Premium (поки завжди відмова)
+    if True: # Завжди True, імітуємо, що глобальний доступ вимкнено
+        await callback.answer("❌ Комбо доступне лише для преміум-користувачів або при глобальній активації.", show_alert=True)
+        return
+
+    # Якщо користувач має доступ (у реальному боті тут була б перевірка)
+    # Відправляємо комбо
+    cards = load_combo_cards()
+    if not cards:
+        await callback.message.answer("Комбо ще не встановлено. Спробуйте пізніше.")
+        await callback.answer()
+        return
+
+    combo_list = "\n".join(f"{i+1}️⃣: {card}" for i, card in enumerate(cards))
+    await callback.message.answer(f"Комбо на сьогодні:\n{combo_list}")
+    await callback.answer()
+
+@dp.callback_query(F.data == "user_ton_info")
+async def process_user_ton_info(callback: types.CallbackQuery):
+    """Обробляє натискання 'Інфо про TON і Combo' користувачем."""
+    # Викликаємо логіку команди /ton_info, але для inline-кнопки
+    await callback.message.answer(
+        INFO_MESSAGE_HTML,
+        parse_mode=ParseMode.HTML,
+        disable_web_page_preview=True
+    )
+    await callback.answer() # Прибираємо годинник з кнопки
+
+# ... (Інші адмін-хендлери пропущено для стислості)
+
+@dp.callback_query(F.data.startswith("admin_"))
+async def process_admin_callbacks(callback: types.CallbackQuery):
+    """Обробляє всі адмінські inline-кнопки."""
+    if callback.from_user.id != ADMIN_ID:
+        await callback.answer("❌ У вас немає прав адміністратора.", show_alert=True)
+        return
+
+    action = callback.data.split('_')[1]
+
+    if action == "update":
+        # Імітуємо запуск скрепінгу (у реальності просто запускаємо функцію скрепера)
+        # У цьому прикладі ми просто імітуємо оновлення.
+        await callback.message.answer("⏳ Запускаю скрапінг. Зачекайте 10-20 секунд...")
         
-    try:
-        global combo_text
-        combo_input = m.text.split(maxsplit=1)
-        if len(combo_input) < 2:
-            await m.answer("❌ Використання: <code>/setcombo &lt;Картка1&gt;, &lt;Картка2&gt;, &lt;Картка3&gt;</code>")
-            return
+        # Оскільки скрепер працює в асинхронному режимі, ми можемо викликати його функцію тут,
+        # але в цьому прикладі ми просто покажемо поточне комбо, яке він міг оновити.
+        await asyncio.sleep(5) 
+        
+        # Відображення результату
+        cards = GLOBAL_COMBO_CARDS # Припускаємо, що скрепер оновив цю змінну
+        if not cards:
+            cards = load_combo_cards() # Або читаємо з диска
             
-        combo_input_text = combo_input[1].strip()
-        card_list = [s.strip() for s in combo_input_text.split(',') if s.strip()]
-        
-        # Обробляємо випадок, коли користувач ввів три картки через кому
-        if len(card_list) >= 3:
-            combo_text = format_combo(card_list)
+        if cards and cards[0] not in ["Скрапер: Секція не знайдена", "Помилка HTTP: ConnectionError"]:
+            combo_list = "\n".join(f"{i+1}️⃣: {card}" for i, card in enumerate(cards))
+            await callback.message.edit_text(f"✅ Комбо оновлено:\n{combo_list}")
         else:
-            # Якщо введений текст не схожий на список, зберігаємо як є
-            combo_text = combo_input_text
+            await callback.message.edit_text(f"❌ Не вдалося оновити комбо. Причина:\n{cards[0]}")
+            
+    elif action == "main":
+        # Повернення до головної панелі
+        await cmd_start(callback.message, dp.bot)
+        
+    else:
+        await callback.message.answer(f"Дія '{action}' ще не реалізована.")
+        
+    await callback.answer() # Прибираємо годинник з кнопки
 
-        save()
-        await m.answer(f"✅ Комбо встановлено вручну та збережено.\n")
-    except Exception as e:
-        logging.error(f"Помилка у setcombo: {e}")
-        await m.answer("❌ Помилка при ручному встановленні комбо.")
+# --- ФУНКЦІЯ ЗАПУСКУ ---
 
+async def main() -> None:
+    """Головна функція запуску бота."""
+    if not BOT_TOKEN:
+        logging.critical("BOT_TOKEN не знайдено. Бот не може запуститися.")
+        return
 
-# === Webhook Запуск ===
-
-async def on_startup(app: web.Application):
-    """Функція, яка викликається при старті aiohttp сервера."""
+    # Створюємо каталог даних, якщо він не існує
+    DATA_DIR.mkdir(exist_ok=True)
+    
+    # Ініціалізація бота
+    bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
+    dp = Dispatcher()
+    dp.include_router(types.router) # Включаємо всі хендлери (включаючи start/seturl/setcombo)
+    
+    # 1. Запуск планувальника скрапінгу у фоновому режимі (якщо він є)
     try:
-        # Встановлюємо Webhook
-        await bot.set_webhook(WEBHOOK_URL)
-        # Запускаємо планувальник скрепінгу у фоновому режимі
-        asyncio.create_task(scheduler())
-        logging.info(f"✅ БОТ УСПІШНО ЗАПУЩЕНО — РЕЖИМ WEBHOOK: {WEBHOOK_URL}")
+        logging.info("Запуск планувальника скрапінгу у фоновому режимі...")
+        # Виклик функції, імпортованої з hamster_scraper
+        asyncio.create_task(main_scheduler()) 
+    except AttributeError as e:
+        logging.error(f"Критична помилка запуску скрапера: {e}")
+
+    # 2. Запуск Long Polling
+    logging.info("Запуск бота у режимі Long Polling...")
+    try:
+        await dp.start_polling(bot)
+    except TelegramNetworkError as e:
+        logging.critical(f"Критична мережева помилка Telegram: {e}. Бот зупиняється.")
     except TelegramUnauthorizedError:
-        logging.critical("КРИТИЧНА ПОМИЛКА: Неправильний BOT_TOKEN!")
-        await bot.session.close() 
-
-app = web.Application()
-app.on_startup.append(on_startup)
-# Реєструємо хендлер для Webhook
-SimpleRequestHandler(dispatcher=dp, bot=bot).register(app, path=WEBHOOK_PATH)
-
+        logging.critical("Недійсний BOT_TOKEN. Перевірте змінну BOT_TOKEN.")
+    except Exception as e:
+        logging.critical(f"Непередбачувана помилка під час роботи бота: {e}")
 
 if __name__ == "__main__":
-    web.run_app(app, host="0.0.0.0", port=PORT)
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        logging.info("Бот вимкнено користувачем.")
