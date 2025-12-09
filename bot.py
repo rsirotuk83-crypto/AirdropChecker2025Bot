@@ -39,7 +39,9 @@ if not BOT_TOKEN:
 
 # Формуємо публічний URL для Webhook
 WEBHOOK_URL = f"https://{RAILWAY_HOST}{WEBHOOK_PATH}" if RAILWAY_HOST else f"http://localhost:{PORT}{WEBHOOK_PATH}" 
-logging.info(f("Налаштований Webhook URL: {WEBHOOK_URL}")
+# --- ВИПРАВЛЕННЯ: ЗАБРАНО ЗАЙВУ ДУЖКУ f() ---
+logging.info(f"Налаштований Webhook URL: {WEBHOOK_URL}") 
+# ---------------------------------------------
 
 bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
 dp = Dispatcher()
