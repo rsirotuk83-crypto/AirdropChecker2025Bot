@@ -8,7 +8,8 @@ from aiohttp import web
 from pathlib import Path
 
 from aiogram import Bot, Dispatcher, types, F
-from aiogram.filters import CommandStart
+# Імпортуємо Command, оскільки F.text == "/start" є більш надійним фільтром для деяких випадків.
+from aiogram.filters import CommandStart, Command 
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
 from aiogram.webhook.aiohttp_server import SimpleRequestHandler
@@ -23,14 +24,15 @@ ADMIN_ID = int(os.getenv("ADMIN_ID", "0"))
 WEBHOOK_HOST = os.getenv("WEBHOOK_HOST")
 PORT = int(os.getenv("PORT", "8080"))
 
-# КРИТИЧНА ПЕРЕВІРКА: WEBHOOK_HOST повинен бути HTTPS, наприклад: https://<domain>.up.railway.app
 if not BOT_TOKEN or not WEBHOOK_HOST:
-    raise RuntimeError("BOT_TOKEN або WEBHOOK_HOST (наприклад, https://<domain>.up.railway.app) не встановлено")
+    # Замінено на звичайний exit, щоб не ламати середовище Railway, якщо воно намагається запустити скрипт без змінних.
+    logger.error("КРИТИЧНА ПОМИЛКА: BOT_TOKEN або WEBHOOK_HOST не встановлено. Завершення.")
+    exit(1)
 
 WEBHOOK_PATH = "/webhook"
 WEBHOOK_URL = f"{WEBHOOK_HOST}{WEBHOOK_PATH}"
 
-# --- Клас для безпечного зберігання даних (Асинхронна безпека) ---
+# --- Клас для безпечного зберігання даних ---
 class ComboStorage:
     DATA_PATH = Path("/app/data")
     DATA_FILE = DATA_PATH / "db.json"
@@ -39,7 +41,7 @@ class ComboStorage:
         self._combo_text = "Комбо ще не встановлено"
         self._source_url = ""
         self._lock = asyncio.Lock()
-        self.load() # Синхронне первинне завантаження
+        self.load() 
 
     def load(self):
         """Синхронно завантажує дані при старті."""
@@ -89,7 +91,7 @@ storage = ComboStorage()
 bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
 dp = Dispatcher()
 
-# === Асинхронне оновлення та планувальник ===
+# === Асинхронне оновлення та планувальник (без змін) ===
 
 async def fetch_combo_data():
     """Асинхронно отримує дані з віддаленого URL."""
@@ -101,7 +103,7 @@ async def fetch_combo_data():
     try:
         async with httpx.AsyncClient(timeout=15) as c:
             r = await c.get(source_url)
-            r.raise_for_status() # Викликає виняток для 4xx/5xx відповідей
+            r.raise_for_status() 
             
             new_combo_text = r.text.strip()
             current_combo_text = await storage.get_combo()
@@ -128,30 +130,28 @@ async def fetch_combo_data():
 
 async def scheduler():
     """Планувальник, який запускає оновлення щодня."""
-    # Початкова затримка, щоб бот встиг повністю запуститися
     await asyncio.sleep(5) 
     logger.info("Планувальник запущено. Перше оновлення за 10 секунд.")
     
-    # Виконуємо перше оновлення одразу після старту
     await asyncio.sleep(10)
     await fetch_combo_data() 
     
     while True:
-        # Чекаємо 24 години
         await asyncio.sleep(86400) 
         await fetch_combo_data()
 
 
-# === Хендлери (Використовують Async Storage) ===
+# === Хендлери (Виправлення: Додано логування та дефолтний хендлер) ===
 
 @dp.message(CommandStart())
 async def start_handler(m: types.Message):
     """Обробка команди /start."""
+    logger.info(f"ХЕНДЛЕР: Отримано команду /start від user={m.from_user.id}")
+    
     kb = [[types.InlineKeyboardButton(text="Отримати комбо", callback_data="getcombo")]]
     if m.from_user.id == ADMIN_ID:
         kb.append([types.InlineKeyboardButton(text="Адмінка", callback_data="admin_panel")])
     
-    # Використовуємо .answer, що є більш універсальним
     await m.answer(
         "👋 *Привіт! Я ваш CryptoComboDaily бот.*\n\n"
         "Отримайте свіже комбо для Hamster Kombat та інших ігор.",
@@ -164,15 +164,16 @@ async def show_combo(c: types.CallbackQuery):
     """Показує актуальне комбо."""
     combo_text_data = await storage.get_combo()
     
+    # Використовуємо c.message.edit_text замість c.answer, як у вашому оригіналі
     await c.message.edit_text(
         f"<b>Комбо на {datetime.now():%d.%m.%Y}</b>\n\n{combo_text_data}", 
         parse_mode="HTML"
     )
-    await c.answer() # Завжди відповідаємо на CallbackQuery
+    await c.answer() 
 
+# ... інші callback_query хендлери (без змін) ...
 @dp.callback_query(F.data == "admin_panel")
 async def admin_panel(c: types.CallbackQuery):
-    """Панель адміністратора."""
     if c.from_user.id != ADMIN_ID:
         await c.answer("У вас немає доступу до цієї панелі.", show_alert=True)
         return
@@ -191,27 +192,26 @@ async def admin_panel(c: types.CallbackQuery):
 
 @dp.callback_query(F.data == "force_fetch")
 async def force_fetch(c: types.CallbackQuery):
-    """Примусове оновлення даних."""
     if c.from_user.id != ADMIN_ID: return
     
     await c.answer("Запускаю примусове оновлення...", cache_time=5)
     await fetch_combo_data()
     
-    # Оновлення тексту панелі після оновлення даних
     await c.message.edit_text("Оновлено! Перевірте дані командою /start.")
 
 @dp.callback_query(F.data == "close_admin")
 async def close_admin(c: types.CallbackQuery):
-    """Закриває адмін-панель, повертаючи /start."""
     if c.from_user.id != ADMIN_ID: return
     
-    await start_handler(c.message) # Повторно викликаємо хендлер /start для повернення
+    # Створюємо фейкове повідомлення для виклику start_handler
+    # Це необхідно, тому що c.message має інший тип, ніж types.Message, який очікує start_handler
+    fake_message = types.Message(message_id=c.message.message_id, date=c.message.date, chat=c.message.chat, text="/start", from_user=c.from_user)
+    await start_handler(fake_message)
     await c.answer("Закрито.")
 
 
 @dp.message(F.text.startswith("/seturl"))
 async def seturl_handler(m: types.Message):
-    """Встановлення нового URL для скрепінгу."""
     if m.from_user.id != ADMIN_ID: return
     
     parts = m.text.split(maxsplit=1)
@@ -226,30 +226,33 @@ async def seturl_handler(m: types.Message):
 
     await storage.set_url(new_url)
     await m.answer(f"✅ URL збережено:\n<code>{new_url}</code>\nЗапускаю примусове оновлення.", parse_mode="HTML")
-    await fetch_combo_data() # Одразу пробуємо завантажити дані
+    await fetch_combo_data() 
 
 @dp.message(F.text.startswith("/setcombo"))
 async def setcombo_handler(m: types.Message):
-    """Ручне встановлення тексту комбо."""
     if m.from_user.id != ADMIN_ID: return
     
     new_combo = m.text.partition(" ")[2].strip() or "Порожнє"
     await storage.set_combo(new_combo)
     await m.answer("✅ Комбо збережено.")
-    
-# === Webhook Hooks та Запуск ===
+
+# --- КРИТИЧНЕ ВИПРАВЛЕННЯ: Дефолтний хендлер для пропущених команд ---
+# Цей хендлер перехопить /start, якщо CommandStart() його пропустить
+@dp.message(F.text == "/start")
+async def fallback_start_handler(m: types.Message):
+    logger.info("ХЕНДЛЕР: /start перехоплено ФІЛЬТРОМ F.text == '/start'.")
+    await start_handler(m)
+
+# --- Webhook Hooks та Запуск (без змін) ---
 
 async def on_startup(app: web.Application) -> None:
     """Виконується aiohttp при старті: встановлює Webhook та запускає планувальник."""
-    
-    # 1. Встановлення Webhook
     try:
         await bot.set_webhook(WEBHOOK_URL)
         logger.info(f"Webhook встановлено: {WEBHOOK_URL}")
     except Exception as e:
         logger.error(f"Помилка при встановленні Webhook: {e}")
         
-    # 2. Запуск фонового планувальника
     asyncio.create_task(scheduler())
     logger.info("Планувальник запущено як фонове завдання.")
 
@@ -265,18 +268,13 @@ async def on_shutdown(app: web.Application) -> None:
 
 app = web.Application()
 app.on_startup.append(on_startup)
-app.on_shutdown.append(on_shutdown) # Додаємо коректне видалення Webhook
+app.on_shutdown.append(on_shutdown) 
 
-# Реєстрація хендлера Telegram Webhook
 SimpleRequestHandler(dispatcher=dp, bot=bot).register(app, path=WEBHOOK_PATH)
 
 if __name__ == "__main__":
     logger.info(f"Запуск сервера на 0.0.0.0:{PORT}")
     try:
-        # Використовуємо web.run_app, як у вашому прикладі
         web.run_app(app, host="0.0.0.0", port=PORT)
-    except RuntimeError:
-        # Це типово для aiohttp в деяких середовищах
-        logger.warning("RuntimeError перехоплено, aiohttp вже завершує роботу.")
     except Exception as e:
         logger.error(f"Критична помилка під час запуску web.run_app: {e}")
