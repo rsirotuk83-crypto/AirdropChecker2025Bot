@@ -4,48 +4,65 @@ import logging
 import json
 import datetime
 from pathlib import Path
-from typing import List, Optional
+from typing import List
+from dotenv import load_dotenv
+
+# Імпорт для Webhooks та асинхронного веб-сервера
+from aiohttp import web 
 
 # Імпорт необхідних бібліотек AIOgram
-from aiogram import Bot, Dispatcher, types, F, Router # << ІМПОРТ ROUTER
+from aiogram import Bot, Dispatcher, types, F, Router
 from aiogram.enums import ParseMode
 from aiogram.filters import CommandStart, Command
 from aiogram.types import Message
 from aiogram.client.default import DefaultBotProperties
-from aiogram.exceptions import TelegramUnauthorizedError, TelegramNetworkError
+from aiogram.exceptions import TelegramUnauthorizedError
+from aiogram.methods import DeleteWebhook, SetWebhook
 
 # ВАЖЛИВО: Імпорт планувальника та глобальної змінної з нашого скрепера
 try:
-    # Припускаємо, що hamster_scraper тепер налаштований на TON Station
     from hamster_scraper import main_scheduler, GLOBAL_COMBO_CARDS
 except ImportError:
-    logging.error("Критична помилка: Не вдалося імпортувати main_scheduler та GLOBAL_COMBO_CARDS з hamster_scraper.py. Перевірте наявність файлу.")
+    logging.error("Критична помилка: Не вдалося імпортувати scraper. Фоновий планувальник не запуститься.")
     async def main_scheduler():
         logging.error("Фоновий планувальник не запущено. Скрепінг не працює.")
         await asyncio.sleep(3600)
-        
-# --- ІНІЦІАЛІЗАЦІЯ ROUTER ---
-router = Router()
 
 # --- КОНСТАНТИ ТА КОНФІГУРАЦІЯ ---
 
+load_dotenv()
 # Налаштування логування
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
 
 # Зчитування змінних середовища
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 try:
     ADMIN_ID = int(os.getenv("ADMIN_ID", "0")) 
 except (ValueError, TypeError):
-    logging.warning("Змінна ADMIN_ID не встановлена або має неправильний формат.")
+    logger.warning("Змінна ADMIN_ID не встановлена або має неправильний формат.")
     ADMIN_ID = 0
+
+# --- КОНФІГУРАЦІЯ WEBHOOKS (КРИТИЧНО ДЛЯ RAILWAY) ---
+# WEBHOOK_HOST повинен бути доменом, наданим Railway (e.g., airdropchecker2025bot-production.up.railway.app)
+# WEBHOOK_PATH - шлях, на який Telegram надсилатиме оновлення
+WEBHOOK_HOST = os.getenv("WEBHOOK_HOST") # Читається як домен
+WEBHOOK_PATH = "/webhook"
+WEB_SERVER_PORT = int(os.getenv("PORT", 8080)) # Порт, який надає Railway
+
+if WEBHOOK_HOST:
+    # URL, який ми передамо Telegram
+    WEBHOOK_URL = f"https://{WEBHOOK_HOST}{WEBHOOK_PATH}"
+else:
+    logger.critical("WEBHOOK_HOST не знайдено. Бот не зможе працювати через Webhooks.")
+    WEBHOOK_URL = None
+
 
 # Шлях для зберігання даних
 DATA_DIR = Path("/app/data") 
-COMBO_URL_FILE = DATA_DIR / "combo_url.txt"
 COMBO_CARDS_FILE = DATA_DIR / "combo_cards.json"
 
-# --- ІНФОРМАЦІЙНИЙ КОНТЕНТ ДЛЯ КОМАНДИ /ton_info ---
+# ІНФОРМАЦІЙНИЙ КОНТЕНТ
 INFO_MESSAGE_HTML = """
 <b>🎮 TON STATION ТА DAILY COMBO</b>
 
@@ -64,42 +81,32 @@ TON Station — це одна з найперспективніших ігор �
 <b>‼️ Важливо:</b> Комбо оновлюється щодня, зазвичай о <b>12:00-15:00 за Києвом</b>.
 """
 
+# --- ІНІЦІАЛІЗАЦІЯ ROUTER ТА ДИСПЕТЧЕРА ---
+router = Router()
+dp = Dispatcher()
+dp.include_router(router) 
+
 # --- ФУНКЦІЇ ЗБЕРІГАННЯ ДАНИХ (Persistence) ---
-
-def load_combo_url() -> str:
-    """Завантажує URL для скрепінгу з файлу."""
-    if COMBO_URL_FILE.exists():
-        return COMBO_URL_FILE.read_text(encoding='utf-8').strip()
-    return ""
-
-def save_combo_url(url: str):
-    """Зберігає URL для скрепінгу у файл."""
-    COMBO_URL_FILE.write_text(url, encoding='utf-8')
-    logging.info(f"URL для скрепінгу оновлено та збережено: {url}")
 
 def load_combo_cards() -> List[str]:
     """Завантажує комбо-картки з файлу."""
     if COMBO_CARDS_FILE.exists():
         try:
-            # Читаємо з диска для відображення
             return json.loads(COMBO_CARDS_FILE.read_text(encoding='utf-8'))
         except json.JSONDecodeError:
-            logging.error("Помилка декодування JSON комбо-карток.")
-    # Якщо глобальна змінна була оновлена скрепером, використовуємо її
+            logger.error("Помилка декодування JSON комбо-карток.")
     return GLOBAL_COMBO_CARDS 
 
 def save_combo_cards(cards: List[str]):
     """Зберігає комбо-картки у файл."""
     COMBO_CARDS_FILE.write_text(json.dumps(cards), encoding='utf-8')
-    logging.info(f"Комбо-картки оновлено та збережено: {cards}")
+    logger.info(f"Комбо-картки оновлено та збережено: {cards}")
 
 
 # --- КЛАВІАТУРИ ---
 
 def get_admin_keyboard() -> types.InlineKeyboardMarkup:
     """Клавіатура для адміністратора."""
-    # Примітка: Клавіатура тут спрощена, але у реальному боті вона має бути оновлена 
-    # відповідно до поточного статусу глобального доступу.
     buttons = [
         [types.InlineKeyboardButton(text="🔄 Оновити комбо зараз", callback_data="admin_update_combo")],
         [types.InlineKeyboardButton(text="❌ Глобальний доступ: ВИМКНЕНО", callback_data="admin_toggle_global_access")],
@@ -116,7 +123,7 @@ def get_user_keyboard() -> types.InlineKeyboardMarkup:
     return types.InlineKeyboardMarkup(inline_keyboard=buttons)
 
 
-# --- ХЕНДЛЕРИ КОМАНД (ПРИКРІПЛЕНІ ДО ROUTER) ---
+# --- ХЕНДЛЕРИ КОМАНД ---
 
 @router.message(CommandStart())
 async def cmd_start(message: Message, bot: Bot):
@@ -124,8 +131,6 @@ async def cmd_start(message: Message, bot: Bot):
     user_id = message.from_user.id
     
     if user_id == ADMIN_ID:
-        # У цьому випадку bot.py читає TARGET_URL з самого себе, тому load_combo_url() не спрацює,
-        # але ми залишаємо заглушку для універсальності.
         combo_url = "TON Station (miningcombo.com)" 
         admin_message = (
             "*Панель адміністратора*\n\n"
@@ -135,7 +140,6 @@ async def cmd_start(message: Message, bot: Bot):
         )
         await message.answer(admin_message, reply_markup=get_admin_keyboard(), parse_mode=ParseMode.MARKDOWN)
     else:
-        # Для звичайного користувача
         await message.answer(
             f"Привіт! Я бот для щоденного комбо TON Station. Ваш ID: {user_id}\nВиберіть опцію:",
             reply_markup=get_user_keyboard()
@@ -143,9 +147,7 @@ async def cmd_start(message: Message, bot: Bot):
 
 @router.message(Command("ton_info"))
 async def cmd_ton_info(message: Message):
-    """
-    Обробляє команду /ton_info і надсилає інформацію про TON Station.
-    """
+    """Обробляє команду /ton_info."""
     await message.answer(
         INFO_MESSAGE_HTML,
         parse_mode=ParseMode.HTML,
@@ -154,7 +156,7 @@ async def cmd_ton_info(message: Message):
 
 @router.message(Command("seturl"))
 async def cmd_seturl(message: Message):
-    """Ця команда тепер є заглушкою, оскільки URL жорстко заданий у scraper.py."""
+    """Заглушка для seturl."""
     if message.from_user.id != ADMIN_ID:
         await message.answer("Ця команда доступна лише адміністратору.")
         return
@@ -173,14 +175,12 @@ async def cmd_setcombo(message: Message):
         return
 
     combo_text = parts[1].strip()
-    # Розділяємо текст комбо на 4 елементи (для TON Station)
     cards = [c.strip() for c in combo_text.split(',') if c.strip()][:4]
     
     if len(cards) < 4:
         await message.answer("❌ Будь ласка, введіть рівно 4 елементи комбо для TON Station, розділені комами.")
         return
 
-    # Оновлюємо глобальну змінну та зберігаємо
     GLOBAL_COMBO_CARDS[:] = cards
     save_combo_cards(cards)
 
@@ -190,27 +190,27 @@ async def cmd_setcombo(message: Message):
 
 # --- ХЕНДЛЕРИ INLINE-КНОПОК ---
 
-# Хендлери кнопок повинні бути прикріплені до роутера або диспетчера
 @router.callback_query(F.data == "user_get_combo")
 async def process_user_get_combo(callback: types.CallbackQuery):
     """Обробляє натискання 'Отримати комбо' користувачем."""
     
-    # Імітація перевірки Premium (поки завжди відмова)
-    if True: # Завжди True, імітуємо, що глобальний доступ вимкнено
+    # Зараз ця логіка імітує відмову (тому що немає реальної перевірки Premium)
+    # Щоб дати користувачеві комбо, замініть True на False.
+    if True: 
         await callback.answer("❌ Комбо доступне лише для преміум-користувачів або при глобальній активації.", show_alert=True)
         return
 
-    # Якщо користувач має доступ (у реальному боті тут була б перевірка)
-    cards = load_combo_cards() # Читаємо з глобальної змінної або файлу
+    cards = load_combo_cards() 
 
     if not cards or cards[0].startswith("Скрапер:"):
-        await callback.message.answer("Комбо ще не встановлено або сталася помилка скрапінгу. Спробуйте пізніше або зверніться до адміна.")
+        await callback.message.answer("Комбо ще не встановлено або сталася помилка скрапінгу. Спробуйте пізніше.")
         await callback.answer()
         return
 
     combo_list = "\n".join(f"{i+1}️⃣: {card}" for i, card in enumerate(cards))
     await callback.message.answer(f"🔥 *Комбо TON Station на сьогодні* (4 карти):\n{combo_list}", parse_mode=ParseMode.MARKDOWN)
     await callback.answer()
+
 
 @router.callback_query(F.data == "user_ton_info")
 async def process_user_ton_info(callback: types.CallbackQuery):
@@ -232,67 +232,108 @@ async def process_admin_callbacks(callback: types.CallbackQuery):
     action = callback.data.split('_')[1]
     
     if action == "update":
-        from hamster_scraper import scrape_for_combo # Імпортуємо функцію скрапінгу
+        from hamster_scraper import scrape_for_combo
         await callback.message.edit_text("⏳ Запускаю ручний скрапінг TON Station. Зачекайте...")
         
-        # Скрапінг відбувається синхронно, але ми запускаємо його в окремому потоці
-        # (aiogram.run_in_threadpool або, для простоти, просто чекаємо)
+        # Виконуємо скрепінг в окремому потоці, щоб не блокувати Event Loop
         new_combo = await asyncio.to_thread(scrape_for_combo) 
         
-        if new_combo and new_combo[0] not in ["Скрапер: Секція не знайдена", "Помилка HTTP: ConnectionError"]:
+        if new_combo and not new_combo[0].startswith("Скрапер:") and not new_combo[0].startswith("Помилка HTTP:"):
             GLOBAL_COMBO_CARDS[:] = new_combo
             save_combo_cards(new_combo)
             combo_list = "\n".join(f"{i+1}️⃣: {card}" for i, card in enumerate(new_combo))
             await callback.message.edit_text(f"✅ Комбо оновлено:\n{combo_list}", reply_markup=get_admin_keyboard())
         else:
-            await callback.message.edit_text(f"❌ Не вдалося оновити комбо. Причина:\n{new_combo}", reply_markup=get_admin_keyboard())
+            await callback.message.edit_text(f"❌ Не вдалося оновити комбо. Причина:\n{new_combo[0]}", reply_markup=get_admin_keyboard())
             
     elif action == "main":
         # Повернення до головної панелі
-        await cmd_start(callback.message, callback.bot) # Викликаємо хендлер start
+        await cmd_start(callback.message, callback.bot)
         
     else:
         await callback.message.answer(f"Дія '{action}' ще не реалізована.")
         
     await callback.answer()
 
-# --- ФУНКЦІЯ ЗАПУСКУ ---
 
-async def main() -> None:
+# --- ФУНКЦІЇ WEBHOOK ---
+
+async def on_startup(bot: Bot) -> None:
+    """Викликається при запуску. Встановлює Webhook."""
+    if WEBHOOK_URL:
+        # Видаляємо попередній Webhook (для очищення від Long Polling)
+        await bot(DeleteWebhook(drop_pending_updates=True))
+        # Встановлюємо новий Webhook
+        logger.info(f"Встановлюю Webhook на URL: {WEBHOOK_URL}")
+        await bot(SetWebhook(url=WEBHOOK_URL, allowed_updates=dp.resolve_used_update_types()))
+    else:
+        logger.error("Не вдалося встановити Webhook, оскільки WEBHOOK_URL не визначено.")
+
+async def on_shutdown(bot: Bot) -> None:
+    """Викликається при зупинці. Видаляє Webhook."""
+    logger.info("Видаляю Webhook...")
+    await bot(DeleteWebhook(drop_pending_updates=True))
+    logger.info("Webhook видалено. Бот зупинено.")
+
+async def start_background_tasks(app: web.Application) -> None:
+    """Запускає фонові завдання (планувальник скрепінгу) при старті сервера."""
+    app['combo_scheduler'] = asyncio.create_task(main_scheduler())
+    logger.info("Фоновий планувальник скрепінгу запущено.")
+
+async def cleanup_background_tasks(app: web.Application) -> None:
+    """Очищає фонові завдання при зупинці сервера."""
+    app['combo_scheduler'].cancel()
+    await app['combo_scheduler']
+    logger.info("Фоновий планувальник скрепінгу зупинено.")
+
+async def init_webhook_server(bot: Bot) -> web.Application:
+    """Ініціалізує aiohttp Webhook сервер."""
+    if not WEBHOOK_HOST:
+        raise ValueError("WEBHOOK_HOST не знайдено.")
+
+    # Реєстрація хендлерів запуску/зупинки (якщо потрібно)
+    dp.startup.register(on_startup)
+    dp.shutdown.register(on_shutdown)
+    
+    app = web.Application()
+    
+    # aiohttp хендлер, який передає запити Telegram в aiogram
+    webhook_requests_handler = dp.get_web_app(bot=bot, path=WEBHOOK_PATH)
+    app.router.add_route("POST", WEBHOOK_PATH, webhook_requests_handler)
+    
+    # Реєстрація завдань, що запускаються при старті та зупинці Webhook-сервера
+    app.on_startup.append(lambda a: on_startup(bot))
+    app.on_startup.append(start_background_tasks)
+    app.on_cleanup.append(cleanup_background_tasks)
+    app.on_cleanup.append(lambda a: on_shutdown(bot))
+
+    return app
+
+def main() -> None:
     """Головна функція запуску бота."""
     if not BOT_TOKEN:
-        logging.critical("BOT_TOKEN не знайдено. Бот не може запуститися.")
+        logger.critical("BOT_TOKEN не знайдено. Бот не може запуститися.")
+        return
+    if not WEBHOOK_HOST:
+        logger.critical("WEBHOOK_HOST не знайдено. Бот не може запуститися через Webhooks.")
         return
 
     DATA_DIR.mkdir(exist_ok=True)
     
     bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
-    dp = Dispatcher()
     
-    # КРИТИЧНО: Включаємо роутер з усіма хендлерами в диспетчер
-    dp.include_router(router) 
+    # Ініціалізація та запуск Webhook-сервера
+    try:
+        logger.info(f"Запуск Webhook-сервера на http://0.0.0.0:{WEB_SERVER_PORT}{WEBHOOK_PATH}")
+        app = init_webhook_server(bot)
+        
+        # web.run_app блокує виконання, що дозволяє Railway підтримувати контейнер активним
+        web.run_app(app, host='0.0.0.0', port=WEB_SERVER_PORT) 
     
-    # 1. Запуск планувальника скрапінгу у фоновому режимі
-    try:
-        logging.info("Запуск планувальника скрапінгу у фоновому режимі...")
-        asyncio.create_task(main_scheduler()) 
-    except AttributeError as e:
-        logging.error(f"Критична помилка запуску скрапера: {e}")
-
-    # 2. Запуск Long Polling
-    logging.info("Запуск бота у режимі Long Polling...")
-    try:
-        # Важливо: використовуємо bot замість dp.bot
-        await dp.start_polling(bot)
-    except TelegramNetworkError as e:
-        logging.critical(f"Критична мережева помилка Telegram: {e}. Бот зупиняється.")
     except TelegramUnauthorizedError:
-        logging.critical("Недійсний BOT_TOKEN. Перевірте змінну BOT_TOKEN.")
+        logger.critical("Недійсний BOT_TOKEN. Перевірте змінну BOT_TOKEN.")
     except Exception as e:
-        logging.critical(f"Непередбачувана помилка під час роботи бота: {e}")
+        logger.critical(f"Непередбачувана критична помилка під час роботи бота: {e}")
 
 if __name__ == "__main__":
-    try:
-        asyncio.run(main())
-    except KeyboardInterrupt:
-        logging.info("Бот вимкнено користувачем.")
+    main()
