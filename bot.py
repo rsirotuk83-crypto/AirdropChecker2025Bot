@@ -20,7 +20,7 @@ WEBHOOK_HOST = os.getenv("WEBHOOK_HOST")
 PORT = int(os.getenv("PORT", "8080"))
 
 if not BOT_TOKEN or not WEBHOOK_HOST:
-    raise RuntimeError("Перевірте BOT_TOKEN і WEBHOOK_HOST")
+    raise RuntimeError("Перевір BOT_TOKEN і WEBHOOK_HOST")
 
 WEBHOOK_PATH = "/webhook"
 WEBHOOK_URL = f"{WEBHOOK_HOST}{WEBHOOK_PATH}"
@@ -28,7 +28,7 @@ WEBHOOK_URL = f"{WEBHOOK_HOST}{WEBHOOK_PATH}"
 bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
 dp = Dispatcher()
 
-# === Дані ===
+# === Дані в Volume ===
 DATA_FILE = "/app/data/db.json"
 combo_text = "Комбо ще не встановлено"
 source_url = ""
@@ -38,39 +38,47 @@ def load():
     if os.path.exists(DATA_FILE):
         try:
             with open(DATA_FILE, "r", encoding="utf-8") as f:
-                d = json.load(f)
-                combo_text = d.get("combo", combo_text)
-                source_url = d.get("url", "")
-        except: pass
+                data = json.load(f)
+                combo_text = data.get("combo", combo_text)
+                source_url = data.get("url", "")
+        except Exception as e:
+            logging.error(f"Помилка завантаження: {e}")
 
 def save():
     os.makedirs("/app/data", exist_ok=True)
-    with open(DATA_FILE, "w", encoding="utf-8") as f:
-        json.dump({"combo": combo_text, "url": source_url}, f)
+    try:
+        with open(DATA_FILE, "w", encoding="utf-8") as f:
+            json.dump({"combo": combo_text, "url": source_url}, f, ensure_ascii=False)
+    except Exception as e:
+        logging.error(f"Помилка збереження: {e}")
 
 load()
 
+# === Оновлення ===
 async def fetch():
     global combo_text
-    if not source_url: return
+    if not source_url:
+        return
     try:
-        async with httpx.AsyncClient(timeout=15) as c:
-            r = await c.get(source_url)
+        async with httpx.AsyncClient(timeout=15) as client:
+            r = await client.get(source_url)
             if r.status_code == 200:
                 new = r.text.strip()
                 if new and new != combo_text:
                     combo_text = new
                     save()
                     if ADMIN_ID:
-                        await bot.send_message(ADMIN_ID, "Комбо оновлено!")
-    except: pass
+                        await bot.send_message(ADMIN_ID, "Комбо оновлено автоматично!")
+    except Exception as e:
+        logging.error(f"Помилка fetch: {e}")
 
 async def scheduler():
-    await asyncio.sleep(30)
+    await asyncio.sleep(10)
     while True:
         await fetch()
-        await asyncio.sleep(86400)
+        await asyncio.sleep(24 * 3600)
 
+# === Хендлери ===
 @dp.message(CommandStart())
 async def start(m: types.Message):
     kb = [[types.InlineKeyboardButton(text="Отримати комбо", callback_data="getcombo")]]
@@ -80,17 +88,39 @@ async def start(m: types.Message):
 
 @dp.callback_query(F.data == "getcombo")
 async def show_combo(c: types.CallbackQuery):
-    await c.message.edit_text(f"<b>Комбо на {datetime.now():%d.%m.%Y}</b>\n\n{combo_text}", parse_mode="HTML")
+    await c.message.edit_text(
+        f"<b>Комбо на {datetime.now():%d.%m.%Y}</b>\n\n{combo_text}",
+        parse_mode="HTML",
+        reply_markup=types.InlineKeyboardMarkup(inline_keyboard=[
+            [types.InlineKeyboardButton(text="Оновити", callback_data="getcombo")]
+        ])
+    )
+
+@dp.callback_query(F.data == "admin")
+async def admin_panel(c: types.CallbackQuery):
+    if c.from_user.id != ADMIN_ID: return
+    await c.message.edit_text(
+        f"Адмінка\nURL: {source_url or 'не встановлено'}",
+        reply_markup=types.InlineKeyboardMarkup(inline_keyboard=[
+            [types.InlineKeyboardButton(text="Оновити зараз", callback_data="force")]
+        ])
+    )
+
+@dp.callback_query(F.data == "force")
+async def force(c: types.CallbackQuery):
+    if c.from_user.id != ADMIN_ID: return
+    await fetch()
+    await c.answer("Оновлено!")
 
 @dp.message(F.text.startswith("/seturl"))
 async def seturl(m: types.Message):
     if m.from_user.id != ADMIN_ID: return
     try:
         global source_url
-        source_url = m.text.split(maxsplit=1)[1]
+        source_url = m.text.split(maxsplit=1)[1].strip()
         save()
         await m.answer(f"URL збережено:\n{source_url}")
-        await fetch()
+        await fetch()  # ТУТ ГОЛОВНЕ — ОНОВЛЮЄМО ОДРАЗУ!
     except:
         await m.answer("Використання: /seturl https://...")
 
@@ -98,7 +128,7 @@ async def seturl(m: types.Message):
 async def on_startup(_):
     await bot.set_webhook(WEBHOOK_URL)
     asyncio.create_task(scheduler())
-    logging.info(f"Бот запущений: {WEBHOOK_URL}")
+    logging.info("БОТ ЗАПУЩЕНО — ВСЕ ПРАЦЮЄ")
 
 app = web.Application()
 app.on_startup.append(on_startup)
