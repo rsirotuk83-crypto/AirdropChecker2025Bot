@@ -34,10 +34,25 @@ WEBHOOK_PATH = f"/webhook/{BOT_TOKEN}"
 WEBHOOK_URL = f"{WEBHOOK_HOST}{WEBHOOK_PATH}"
 
 # Ініціалізація бота та диспетчера з єдиним ParseMode=HTML
-# Це забезпечує коректну роботу методів .answer, .edit_text
 bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
 dp = Dispatcher()
 
+# --- Утиліти для роботи з меню ---
+def get_main_menu_keyboard(user_id: int) -> types.InlineKeyboardMarkup:
+    """Генерує клавіатуру головного меню."""
+    keyboard = [
+        [types.InlineKeyboardButton(text="📦 Отримати комбо", callback_data="getcombo")]
+    ]
+    if user_id == ADMIN_ID:
+        keyboard.append(
+            [types.InlineKeyboardButton(text="⚙️ Адмінка", callback_data="admin_panel")]
+        )
+    return types.InlineKeyboardMarkup(inline_keyboard=keyboard)
+
+MAIN_MENU_TEXT = (
+    "<b>👋 CryptoComboDaily</b>\n\n"
+    "Отримайте актуальне комбо для Hamster Kombat та інших ігор."
+)
 
 # --- Асинхронний клас для безпечного зберігання даних ---
 class ComboStorage:
@@ -45,6 +60,7 @@ class ComboStorage:
     DATA_FILE = DATA_PATH / "db.json"
 
     def __init__(self):
+        # Оновлений текст за замовчуванням
         self._combo_text = "Комбо ще не встановлено. Використовуйте /setcombo або /seturl (для адміністратора)."
         self._source_url = ""
         self._lock = asyncio.Lock()
@@ -68,11 +84,16 @@ class ComboStorage:
             self.DATA_PATH.mkdir(parents=True, exist_ok=True)
             try:
                 data = {"combo": self._combo_text, "url": self._source_url}
-                with open(self.DATA_FILE, "w", encoding="utf-8") as f:
-                    json.dump(data, f)
+                # Використовуємо run_in_executor для блокуючого I/O
+                await asyncio.to_thread(self._sync_save, data)
                 logger.debug("Сховище: Дані успішно збережено.")
             except Exception as e:
                 logger.error(f"Сховище: КРИТИЧНА ПОМИЛКА при збереженні даних: {e}")
+
+    def _sync_save(self, data):
+        """Синхронний запис для використання в to_thread."""
+        with open(self.DATA_FILE, "w", encoding="utf-8") as f:
+            json.dump(data, f)
 
     async def get_combo(self):
         async with self._lock:
@@ -150,18 +171,14 @@ async def scheduler():
 
 @dp.message(CommandStart())
 async def start_handler(m: types.Message):
-    """Обробка команди /start."""
+    """
+    ОБРОБКА /START: Надсилає НОВЕ повідомлення з головним меню.
+    """
     logger.info(f"ХЕНДЛЕР: Отримано команду /start від user={m.from_user.id}")
     
-    kb = [[types.InlineKeyboardButton(text="Отримати комбо", callback_data="getcombo")]]
-    if m.from_user.id == ADMIN_ID:
-        kb.append([types.InlineKeyboardButton(text="Адмінка", callback_data="admin_panel")])
-    
-    # ВИПРАВЛЕНО: Уніфікація parse_mode=HTML
     await m.answer(
-        "<b>👋 Привіт! Я ваш CryptoComboDaily бот.</b>\n\n"
-        "Отримайте свіже комбо для Hamster Kombat та інших ігор.",
-        reply_markup=types.InlineKeyboardMarkup(inline_keyboard=kb)
+        MAIN_MENU_TEXT,
+        reply_markup=get_main_menu_keyboard(m.from_user.id)
     )
 
 @dp.message(Command("start_info"))
@@ -241,22 +258,16 @@ async def force_fetch(c: types.CallbackQuery):
     )
 
 @dp.callback_query(F.data == "back_to_start")
-async def back_to_start(c: types.CallbackQuery):
+async def back_to_start_handler(c: types.CallbackQuery):
     """
-    Повертає до головного меню, редагуючи повідомлення (усунуто рекурсивний виклик).
+    ОБРОБКА КНОПКИ 'НАЗАД': Редагує поточне повідомлення на головне меню.
     """
     logger.info(f"ХЕНДЛЕР: Отримано запит back_to_start від user={c.from_user.id}. Редагую повідомлення.")
     
-    # 1. Створюємо клавіатуру головного меню
-    kb = [[types.InlineKeyboardButton(text="Отримати комбо", callback_data="getcombo")]]
-    if c.from_user.id == ADMIN_ID:
-        kb.append([types.InlineKeyboardButton(text="Адмінка", callback_data="admin_panel")])
-
-    # 2. Редагуємо повідомлення, використовуючи логіку start_handler. Уніфіковано на HTML.
+    # Використовуємо MAIN_MENU_TEXT та get_main_menu_keyboard
     await c.message.edit_text(
-        "<b>👋 Привіт! Я ваш CryptoComboDaily бот.</b>\n\n"
-        "Отримайте свіже комбо для Hamster Kombat та інших ігор.",
-        reply_markup=types.InlineKeyboardMarkup(inline_keyboard=kb)
+        MAIN_MENU_TEXT,
+        reply_markup=get_main_menu_keyboard(c.from_user.id)
     )
     await c.answer("Головне меню.")
 
@@ -295,7 +306,7 @@ async def set_webhook_and_clear_updates():
         await bot.delete_webhook(drop_pending_updates=True)
         logger.info("Webhook очищено від старих оновлень.")
         
-        # Встановлюємо webhook на URL з токеном у шляху (ВАША КРИТИЧНА ЗМІНА)
+        # Встановлюємо webhook на URL з токеном у шляху 
         await bot.set_webhook(WEBHOOK_URL)
         logger.info(f"Webhook встановлено: {WEBHOOK_URL}")
     except TelegramBadRequest as e:
@@ -325,7 +336,7 @@ app = web.Application()
 app.on_startup.append(on_startup)
 app.on_shutdown.append(on_shutdown) 
 
-# SimpleRequestHandler реєструємо на шляху з токеном (ВАША КРИТИЧНА ЗМІНА)
+# SimpleRequestHandler реєструємо на шляху з токеном 
 SimpleRequestHandler(dispatcher=dp, bot=bot).register(app, path=WEBHOOK_PATH)
 
 if __name__ == "__main__":
