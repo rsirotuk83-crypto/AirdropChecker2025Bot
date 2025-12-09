@@ -9,6 +9,8 @@ from dotenv import load_dotenv
 
 # Імпорт для Webhooks та асинхронного веб-сервера
 from aiohttp import web 
+# *** FIX: Правильний імпорт хендлера Webhook для aiogram v3 ***
+from aiogram.webhook.aiohttp_server import SimpleRequestHandler
 
 # Імпорт необхідних бібліотек AIOgram
 from aiogram import Bot, Dispatcher, types, F, Router
@@ -265,6 +267,7 @@ async def on_startup(bot: Bot) -> None:
         await bot(DeleteWebhook(drop_pending_updates=True))
         # Встановлюємо новий Webhook
         logger.info(f"Встановлюю Webhook на URL: {WEBHOOK_URL}")
+        # Використовуємо dp.resolve_used_update_types() для підвищення ефективності
         await bot(SetWebhook(url=WEBHOOK_URL, allowed_updates=dp.resolve_used_update_types()))
     else:
         logger.error("Не вдалося встановити Webhook, оскільки WEBHOOK_URL не визначено.")
@@ -282,24 +285,32 @@ async def start_background_tasks(app: web.Application) -> None:
 
 async def cleanup_background_tasks(app: web.Application) -> None:
     """Очищає фонові завдання при зупинці сервера."""
-    app['combo_scheduler'].cancel()
-    await app['combo_scheduler']
-    logger.info("Фоновий планувальник скрепінгу зупинено.")
+    # Перевіряємо, чи існує завдання, перш ніж намагатися його скасувати
+    if 'combo_scheduler' in app:
+        app['combo_scheduler'].cancel()
+        try:
+            await app['combo_scheduler']
+        except asyncio.CancelledError:
+            pass # Очікуваний виняток після скасування
+        logger.info("Фоновий планувальник скрепінгу зупинено.")
 
 async def init_webhook_server(bot: Bot) -> web.Application:
     """Ініціалізує aiohttp Webhook сервер."""
     if not WEBHOOK_HOST:
         raise ValueError("WEBHOOK_HOST не знайдено.")
 
-    # Реєстрація хендлерів запуску/зупинки (якщо потрібно)
+    # Реєстрація хендлерів запуску/зупинки
     dp.startup.register(on_startup)
     dp.shutdown.register(on_shutdown)
     
     app = web.Application()
     
-    # aiohttp хендлер, який передає запити Telegram в aiogram
-    webhook_requests_handler = dp.get_web_app(bot=bot, path=WEBHOOK_PATH)
-    app.router.add_route("POST", WEBHOOK_PATH, webhook_requests_handler)
+    # *** FIX: Використовуємо SimpleRequestHandler для aiogram v3 ***
+    # Він сам реєструє POST-маршрут на вказаний шлях.
+    SimpleRequestHandler(
+        dispatcher=dp,
+        bot=bot
+    ).register(app, path=WEBHOOK_PATH)
     
     # Реєстрація завдань, що запускаються при старті та зупинці Webhook-сервера
     app.on_startup.append(lambda a: on_startup(bot))
@@ -325,9 +336,10 @@ def main() -> None:
     # Ініціалізація та запуск Webhook-сервера
     try:
         logger.info(f"Запуск Webhook-сервера на http://0.0.0.0:{WEB_SERVER_PORT}{WEBHOOK_PATH}")
-        app = init_webhook_server(bot)
+        # Функція init_webhook_server тепер повертає готовий aiohttp.web.Application
+        app = asyncio.run(init_webhook_server(bot))
         
-        # web.run_app блокує виконання, що дозволяє Railway підтримувати контейнер активним
+        # web.run_app блокує виконання
         web.run_app(app, host='0.0.0.0', port=WEB_SERVER_PORT) 
     
     except TelegramUnauthorizedError:
