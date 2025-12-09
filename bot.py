@@ -51,7 +51,7 @@ class ComboStorage:
                     d = json.load(f)
                     self._combo_text = d.get("combo", self._combo_text)
                     self._source_url = d.get("url", "")
-                    logger.info("Сховище: Дані успішно завантажено.")
+                    logger.info(f"Сховище: Дані успішно завантажено. URL: {self._source_url[:30]}...")
             except Exception as e:
                 logger.warning(f"Сховище: Помилка при читанні даних: {e}")
 
@@ -96,7 +96,7 @@ async def fetch_combo_data():
     """Асинхронно отримує дані з віддаленого URL."""
     source_url = await storage.get_url()
     if not source_url:
-        logger.warning("Скрепінг: URL для скрепінгу не встановлено.")
+        logger.warning("Скрепінг: URL для скрепінгу не встановлено. Пропускаю оновлення.")
         return
 
     try:
@@ -140,7 +140,7 @@ async def scheduler():
         await fetch_combo_data()
 
 
-# === Хендлери (Виправлено: Проблема з /start вирішена, логування додано) ===
+# === Хендлери (Додано команду /start_info для адміна) ===
 
 @dp.message(CommandStart())
 async def start_handler(m: types.Message):
@@ -158,6 +158,32 @@ async def start_handler(m: types.Message):
         reply_markup=types.InlineKeyboardMarkup(inline_keyboard=kb),
         parse_mode=ParseMode.MARKDOWN
     )
+
+@dp.message(Command("start_info"))
+async def start_info_handler(m: types.Message):
+    """Додаткова інформація для адміна про налаштування."""
+    if m.from_user.id != ADMIN_ID:
+        await m.answer("Ця команда лише для адміністратора.")
+        return
+
+    current_url = await storage.get_url()
+    
+    message_text = (
+        "⚙️ **НАЛАШТУВАННЯ БОТА**\n\n"
+        "1. **URL скрепінгу:** "
+    )
+    if not current_url:
+        message_text += "🔴 *Не встановлено*.\n\n"
+        message_text += "Будь ласка, встановіть його командою:\n"
+        message_text += "`/seturl https://ваш-джерело.com/combo.txt`\n\n"
+        message_text += "2. **Ручне комбо:** Ви можете встановити комбо вручну:\n"
+        message_text += "`/setcombo Нове комбо`"
+    else:
+        message_text += f"✅ `{current_url}`\n\n"
+        message_text += "2. **Примусове оновлення:** Використовуйте кнопку в Адмінці."
+        
+    await m.answer(message_text, parse_mode=ParseMode.MARKDOWN)
+
 
 @dp.callback_query(F.data == "getcombo")
 async def show_combo(c: types.CallbackQuery):
@@ -184,11 +210,12 @@ async def admin_panel(c: types.CallbackQuery):
     current_url = await storage.get_url()
     
     await c.message.edit_text(
-        f"<b>Адмінка</b>\n\nПоточний URL скрепінгу: <code>{current_url or 'Не встановлено'}</code>",
+        f"<b>Адмінка</b>\n\nПоточний URL скрепінгу: <code>{current_url or 'Не встановлено'}</code>\n\n"
+        f"Використовуйте команду /seturl або /setcombo для зміни налаштувань.",
         parse_mode="HTML",
         reply_markup=types.InlineKeyboardMarkup(inline_keyboard=[
             [types.InlineKeyboardButton(text="Оновити зараз", callback_data="force_fetch")],
-            [types.InlineKeyboardButton(text="Закрити", callback_data="back_to_start")]
+            [types.InlineKeyboardButton(text="<< Назад", callback_data="back_to_start")] 
         ])
     )
     await c.answer()
@@ -197,17 +224,42 @@ async def admin_panel(c: types.CallbackQuery):
 async def force_fetch(c: types.CallbackQuery):
     if c.from_user.id != ADMIN_ID: return
     
+    current_url = await storage.get_url()
+    if not current_url:
+        await c.answer("Не вдалося оновити. URL скрепінгу не встановлено.", show_alert=True)
+        return
+    
     await c.answer("Запускаю примусове оновлення...", cache_time=5)
     await fetch_combo_data()
     
-    await c.message.edit_text("Оновлено! Перевірте дані командою /start.")
+    # Редагуємо повідомлення на повідомлення про успіх
+    await c.message.edit_text(
+        f"✅ Оновлено!\n"
+        f"Перевірка завершена. Якщо дані змінилися, вони вже збережені.",
+        reply_markup=types.InlineKeyboardMarkup(inline_keyboard=[
+            [types.InlineKeyboardButton(text="<< Назад", callback_data="back_to_start")] 
+        ])
+    )
 
 @dp.callback_query(F.data == "back_to_start")
 async def back_to_start(c: types.CallbackQuery):
-    """Повертає до головного меню, симулюючи команду /start."""
-    # Створюємо фейкове повідомлення для виклику start_handler
-    fake_message = types.Message(message_id=c.message.message_id, date=c.message.date, chat=c.message.chat, text="/start", from_user=c.from_user)
-    await start_handler(fake_message)
+    """
+    Повертає до головного меню, редагуючи повідомлення. 
+    """
+    logger.info(f"ХЕНДЛЕР: Отримано запит back_to_start від user={c.from_user.id}. Редагую повідомлення.")
+    
+    # 1. Створюємо клавіатуру головного меню
+    kb = [[types.InlineKeyboardButton(text="Отримати комбо", callback_data="getcombo")]]
+    if c.from_user.id == ADMIN_ID:
+        kb.append([types.InlineKeyboardButton(text="Адмінка", callback_data="admin_panel")])
+
+    # 2. Редагуємо повідомлення, використовуючи логіку start_handler
+    await c.message.edit_text(
+        "👋 *Привіт! Я ваш CryptoComboDaily бот.*\n\n"
+        "Отримайте свіже комбо для Hamster Kombat та інших ігор.",
+        reply_markup=types.InlineKeyboardMarkup(inline_keyboard=kb),
+        parse_mode=ParseMode.MARKDOWN
+    )
     await c.answer("Головне меню.")
 
 @dp.message(F.text.startswith("/seturl"))
@@ -216,16 +268,16 @@ async def seturl_handler(m: types.Message):
     
     parts = m.text.split(maxsplit=1)
     if len(parts) < 2:
-        await m.answer("Використання: <code>/seturl https://example.com/api/combo</code>", parse_mode="HTML")
+        await m.answer("❌ Використання: <code>/seturl https://example.com/api/combo.txt</code>", parse_mode="HTML")
         return
     
     new_url = parts[1].strip()
     if not (new_url.startswith("http://") or new_url.startswith("https://")):
-        await m.answer("URL повинен починатися з http:// або https://")
+        await m.answer("❌ URL повинен починатися з http:// або https://")
         return
 
     await storage.set_url(new_url)
-    await m.answer(f"✅ URL збережено:\n<code>{new_url}</code>\nЗапускаю примусове оновлення.", parse_mode="HTML")
+    await m.answer(f"✅ URL збережено:\n<code>{new_url}</code>\n\nЗапускаю примусове оновлення. Перевірте логі!", parse_mode="HTML")
     await fetch_combo_data() 
 
 @dp.message(F.text.startswith("/setcombo"))
@@ -236,7 +288,7 @@ async def setcombo_handler(m: types.Message):
     await storage.set_combo(new_combo)
     await m.answer("✅ Комбо збережено.")
 
-# === Webhook Hooks та Запуск ===
+# --- Webhook Hooks та Запуск ---
 
 async def set_webhook_and_clear_updates():
     """Встановлює Webhook і очищає чергу старих оновлень."""
