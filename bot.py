@@ -8,10 +8,11 @@ from aiohttp import web
 from pathlib import Path
 
 from aiogram import Bot, Dispatcher, types, F
-# Імпортуємо Command, оскільки F.text == "/start" є більш надійним фільтром для деяких випадків.
 from aiogram.filters import CommandStart, Command 
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
+# Важливий імпорт, оскільки ми будемо використовувати його для "чистки"
+from aiogram.exceptions import TelegramBadRequest 
 from aiogram.webhook.aiohttp_server import SimpleRequestHandler
 
 # --- Конфігурація ---
@@ -25,7 +26,6 @@ WEBHOOK_HOST = os.getenv("WEBHOOK_HOST")
 PORT = int(os.getenv("PORT", "8080"))
 
 if not BOT_TOKEN or not WEBHOOK_HOST:
-    # Замінено на звичайний exit, щоб не ламати середовище Railway, якщо воно намагається запустити скрипт без змінних.
     logger.error("КРИТИЧНА ПОМИЛКА: BOT_TOKEN або WEBHOOK_HOST не встановлено. Завершення.")
     exit(1)
 
@@ -91,7 +91,7 @@ storage = ComboStorage()
 bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
 dp = Dispatcher()
 
-# === Асинхронне оновлення та планувальник (без змін) ===
+# === Асинхронне оновлення та планувальник ===
 
 async def fetch_combo_data():
     """Асинхронно отримує дані з віддаленого URL."""
@@ -141,7 +141,7 @@ async def scheduler():
         await fetch_combo_data()
 
 
-# === Хендлери (Виправлення: Додано логування та дефолтний хендлер) ===
+# === Хендлери ===
 
 @dp.message(CommandStart())
 async def start_handler(m: types.Message):
@@ -159,19 +159,23 @@ async def start_handler(m: types.Message):
         parse_mode=ParseMode.MARKDOWN
     )
 
+# --- КРИТИЧНЕ ВИПРАВЛЕННЯ: Дефолтний хендлер для пропущених команд (залишаємо для надійності) ---
+@dp.message(F.text == "/start")
+async def fallback_start_handler(m: types.Message):
+    logger.info("ХЕНДЛЕР: /start перехоплено ФІЛЬТРОМ F.text == '/start'.")
+    await start_handler(m)
+    
+# ... Всі інші хендлери залишаємо без змін для стислості ...
+
 @dp.callback_query(F.data == "getcombo")
 async def show_combo(c: types.CallbackQuery):
-    """Показує актуальне комбо."""
     combo_text_data = await storage.get_combo()
-    
-    # Використовуємо c.message.edit_text замість c.answer, як у вашому оригіналі
     await c.message.edit_text(
         f"<b>Комбо на {datetime.now():%d.%m.%Y}</b>\n\n{combo_text_data}", 
         parse_mode="HTML"
     )
     await c.answer() 
 
-# ... інші callback_query хендлери (без змін) ...
 @dp.callback_query(F.data == "admin_panel")
 async def admin_panel(c: types.CallbackQuery):
     if c.from_user.id != ADMIN_ID:
@@ -203,12 +207,9 @@ async def force_fetch(c: types.CallbackQuery):
 async def close_admin(c: types.CallbackQuery):
     if c.from_user.id != ADMIN_ID: return
     
-    # Створюємо фейкове повідомлення для виклику start_handler
-    # Це необхідно, тому що c.message має інший тип, ніж types.Message, який очікує start_handler
     fake_message = types.Message(message_id=c.message.message_id, date=c.message.date, chat=c.message.chat, text="/start", from_user=c.from_user)
     await start_handler(fake_message)
     await c.answer("Закрито.")
-
 
 @dp.message(F.text.startswith("/seturl"))
 async def seturl_handler(m: types.Message):
@@ -236,23 +237,40 @@ async def setcombo_handler(m: types.Message):
     await storage.set_combo(new_combo)
     await m.answer("✅ Комбо збережено.")
 
-# --- КРИТИЧНЕ ВИПРАВЛЕННЯ: Дефолтний хендлер для пропущених команд ---
-# Цей хендлер перехопить /start, якщо CommandStart() його пропустить
-@dp.message(F.text == "/start")
-async def fallback_start_handler(m: types.Message):
-    logger.info("ХЕНДЛЕР: /start перехоплено ФІЛЬТРОМ F.text == '/start'.")
-    await start_handler(m)
+# --- Webhook Hooks та Запуск (Зміни для ініціалізації) ---
 
-# --- Webhook Hooks та Запуск (без змін) ---
+async def set_webhook_and_clear_updates():
+    """Встановлює Webhook і очищає чергу старих оновлень."""
+    # 1. Скидаємо всі "зависші" оновлення
+    try:
+        current_webhook = await bot.get_webhook_info()
+        if current_webhook.pending_update_count > 0:
+            logger.warning(f"Очищаємо {current_webhook.pending_update_count} зависших оновлень...")
+            await bot.delete_webhook(drop_pending_updates=True)
+            logger.warning("Оновлення очищено.")
+    except TelegramBadRequest as e:
+        logger.error(f"Помилка Telegram при очищенні оновлень: {e}")
+    except Exception as e:
+        logger.error(f"Непередбачувана помилка при очищенні оновлень: {e}")
 
-async def on_startup(app: web.Application) -> None:
-    """Виконується aiohttp при старті: встановлює Webhook та запускає планувальник."""
+    # 2. Встановлення нового Webhook
     try:
         await bot.set_webhook(WEBHOOK_URL)
         logger.info(f"Webhook встановлено: {WEBHOOK_URL}")
     except Exception as e:
         logger.error(f"Помилка при встановленні Webhook: {e}")
+
+
+async def on_startup(app: web.Application) -> None:
+    """Виконується aiohttp при старті: ініціалізує DP, встановлює Webhook та запускає планувальник."""
+    
+    # 1. Примусова ініціалізація диспетчера (хоча це може бути зайвим, це гарантує готовність)
+    # await dp.emit_startup() # У aiogram 3.x це часто не потрібно, але може допомогти.
+
+    # 2. Встановлення Webhook та очищення черги
+    await set_webhook_and_clear_updates()
         
+    # 3. Запуск фонового планувальника
     asyncio.create_task(scheduler())
     logger.info("Планувальник запущено як фонове завдання.")
 
@@ -261,6 +279,7 @@ async def on_shutdown(app: web.Application) -> None:
     """Виконується aiohttp при зупинці: видаляє Webhook."""
     logger.info("Видалення Webhook...")
     await bot.delete_webhook()
+    # await dp.emit_shutdown() # Також може бути корисно при завершенні
     await bot.session.close()
     logger.info("Webhook видалено. Бот зупинено.")
 
