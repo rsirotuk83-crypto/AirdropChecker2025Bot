@@ -1,4 +1,3 @@
-import asyncio
 import logging
 import os
 
@@ -13,10 +12,17 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-WEBHOOK_URL = os.getenv("WEBHOOK_URL")  # https://xxx.up.railway.app
-WEBHOOK_PATH = f"/webhook/{BOT_TOKEN}"
-WEBHOOK_FULL_URL = WEBHOOK_URL + WEBHOOK_PATH
+WEBHOOK_URL = os.getenv("WEBHOOK_URL")
 PORT = int(os.getenv("PORT", 8080))
+
+if not BOT_TOKEN:
+    raise RuntimeError("❌ BOT_TOKEN не встановлено")
+
+if not WEBHOOK_URL:
+    raise RuntimeError("❌ WEBHOOK_URL не встановлено")
+
+WEBHOOK_PATH = f"/webhook/{BOT_TOKEN}"
+WEBHOOK_FULL_URL = WEBHOOK_URL.rstrip("/") + WEBHOOK_PATH
 
 bot = Bot(BOT_TOKEN)
 dp = Dispatcher()
@@ -25,7 +31,7 @@ dp.include_router(router)
 
 
 # =======================
-# /start — ОБОВʼЯЗКОВО
+# /start
 # =======================
 @router.message(CommandStart())
 async def cmd_start(message: Message):
@@ -35,7 +41,7 @@ async def cmd_start(message: Message):
     kb.button(text="🔄 Back to start", callback_data="back_to_start")
 
     await message.answer(
-        "✅ Бот працює.\nВітаю!",
+        "✅ Бот працює стабільно.\nНатисни кнопку ⬇️",
         reply_markup=kb.as_markup()
     )
 
@@ -48,28 +54,27 @@ async def back_to_start(cb: CallbackQuery):
     logger.info(f"back_to_start від user={cb.from_user.id}")
 
     await cb.message.edit_text(
-        "🔁 Ви повернулись на старт",
+        "🔁 Повернення на старт ✅",
         reply_markup=cb.message.reply_markup
     )
     await cb.answer()
 
 
 # =======================
-# FALLBACK — ЩОБ БОТ НІКОЛИ НЕ МОВЧАВ
+# FALLBACK
 # =======================
 @router.message()
 async def fallback(message: Message):
-    logger.info(f"fallback message від user={message.from_user.id}")
     await message.answer("Я на звʼязку ✅\nНатисни /start")
 
 
 # =======================
-# WEBHOOK APP
+# WEBHOOK
 # =======================
 async def on_startup(app):
     await bot.delete_webhook(drop_pending_updates=True)
     await bot.set_webhook(WEBHOOK_FULL_URL)
-    logger.info(f"Webhook встановлено: {WEBHOOK_FULL_URL}")
+    logger.info(f"✅ Webhook встановлено: {WEBHOOK_FULL_URL}")
 
 
 async def handle_webhook(request):
@@ -83,6 +88,7 @@ def main():
     app.router.add_post(WEBHOOK_PATH, handle_webhook)
     app.on_startup.append(on_startup)
 
+    logger.info("🚀 Запуск сервера")
     web.run_app(app, host="0.0.0.0", port=PORT)
 
 
