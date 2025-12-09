@@ -16,11 +16,11 @@ logging.basicConfig(level=logging.INFO)
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 ADMIN_ID = int(os.getenv("ADMIN_ID", "0"))
-WEBHOOK_HOST = os.getenv("WEBHOOK_HOST")  # https://airdropchecker2025bot-production.up.railway.app
+WEBHOOK_HOST = os.getenv("WEBHOOK_HOST")
 PORT = int(os.getenv("PORT", "8080"))
 
 if not BOT_TOKEN or not WEBHOOK_HOST:
-    raise RuntimeError("BOT_TOKEN або WEBHOOK_HOST не встановлено!")
+    raise RuntimeError("Перевірте BOT_TOKEN і WEBHOOK_HOST")
 
 WEBHOOK_PATH = "/webhook"
 WEBHOOK_URL = f"{WEBHOOK_HOST}{WEBHOOK_PATH}"
@@ -28,7 +28,7 @@ WEBHOOK_URL = f"{WEBHOOK_HOST}{WEBHOOK_PATH}"
 bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
 dp = Dispatcher()
 
-# === Дані в Volume ===
+# === Дані ===
 DATA_FILE = "/app/data/db.json"
 combo_text = "Комбо ще не встановлено"
 source_url = ""
@@ -50,7 +50,6 @@ def save():
 
 load()
 
-# === Оновлення ===
 async def fetch():
     global combo_text
     if not source_url: return
@@ -70,9 +69,8 @@ async def scheduler():
     await asyncio.sleep(30)
     while True:
         await fetch()
-        await asyncio.sleep(24 * 3600)
+        await asyncio.sleep(86400)
 
-# === Хендлери ===
 @dp.message(CommandStart())
 async def start(m: types.Message):
     kb = [[types.InlineKeyboardButton(text="Отримати комбо", callback_data="getcombo")]]
@@ -83,19 +81,6 @@ async def start(m: types.Message):
 @dp.callback_query(F.data == "getcombo")
 async def show_combo(c: types.CallbackQuery):
     await c.message.edit_text(f"<b>Комбо на {datetime.now():%d.%m.%Y}</b>\n\n{combo_text}", parse_mode="HTML")
-
-@dp.callback_query(F.data == "admin")
-async def admin_panel(c: types.CallbackQuery):
-    if c.from_user.id != ADMIN_ID: return
-    await c.message.edit_text("Адмінка", reply_markup=types.InlineKeyboardMarkup(inline_keyboard=[
-        [types.InlineKeyboardButton(text="Оновити зараз", callback_data="force")]
-    ]))
-
-@dp.callback_query(F.data == "force")
-async def force(c: types.CallbackQuery):
-    if c.from_user.id != ADMIN_ID: return
-    await fetch()
-    await c.answer("Оновлено!")
 
 @dp.message(F.text.startswith("/seturl"))
 async def seturl(m: types.Message):
@@ -109,19 +94,11 @@ async def seturl(m: types.Message):
     except:
         await m.answer("Використання: /seturl https://...")
 
-@dp.message(F.text.startswith("/setcombo"))
-async def setcombo(m: types.Message):
-    if m.from_user.id != ADMIN_ID: return
-    global combo_text
-    combo_text = m.text.partition(" ")[2] or "Порожнє"
-    save()
-    await m.answer("Комбо збережено")
-
 # === Webhook ===
 async def on_startup(_):
     await bot.set_webhook(WEBHOOK_URL)
     asyncio.create_task(scheduler())
-    logging.info(f"Webhook встановлено: {WEBHOOK_URL}")
+    logging.info(f"Бот запущений: {WEBHOOK_URL}")
 
 app = web.Application()
 app.on_startup.append(on_startup)
