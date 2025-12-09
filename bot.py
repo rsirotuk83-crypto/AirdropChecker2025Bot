@@ -11,15 +11,25 @@ from aiogram.filters import CommandStart
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
 from aiogram.webhook.aiohttp_server import SimpleRequestHandler
+# КРИТИЧНИЙ ІМПОРТ для обробки помилок
+from aiogram.exceptions import TelegramBadRequest, TelegramUnauthorizedError
 
-logging.basicConfig(level=logging.INFO)
+# --- КОНФІГУРАЦІЯ ---
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-ADMIN_ID = int(os.getenv("ADMIN_ID", "0"))
+# Коректне перетворення ADMIN_ID
+try:
+    ADMIN_ID = int(os.getenv("ADMIN_ID", "0"))
+except ValueError:
+    ADMIN_ID = 0
+    logging.error("ADMIN_ID не є цілим числом. Встановлено 0.")
+
 WEBHOOK_HOST = os.getenv("WEBHOOK_HOST")
 PORT = int(os.getenv("PORT", "8080"))
 
 if not BOT_TOKEN or not WEBHOOK_HOST:
+    # Залишаємо RuntimeError, оскільки це критично для запуску
     raise RuntimeError("Перевір BOT_TOKEN і WEBHOOK_HOST")
 
 WEBHOOK_PATH = "/webhook"
@@ -41,14 +51,19 @@ def load():
                 data = json.load(f)
                 combo_text = data.get("combo", combo_text)
                 source_url = data.get("url", "")
+            logging.info("Дані завантажено успішно.")
         except Exception as e:
             logging.error(f"Помилка завантаження: {e}")
+    else:
+        logging.warning(f"Файл бази даних {DATA_FILE} не знайдено.")
 
 def save():
     os.makedirs("/app/data", exist_ok=True)
     try:
         with open(DATA_FILE, "w", encoding="utf-8") as f:
+            # Використовуємо ensure_ascii=False для коректного збереження українських символів
             json.dump({"combo": combo_text, "url": source_url}, f, ensure_ascii=False)
+        logging.info("Дані збережено успішно.")
     except Exception as e:
         logging.error(f"Помилка збереження: {e}")
 
@@ -58,17 +73,23 @@ load()
 async def fetch():
     global combo_text
     if not source_url:
+        logging.warning("URL для автооновлення відсутній.")
         return
     try:
         async with httpx.AsyncClient(timeout=15) as client:
             r = await client.get(source_url)
-            if r.status_code == 200:
-                new = r.text.strip()
-                if new and new != combo_text:
-                    combo_text = new
-                    save()
-                    if ADMIN_ID:
-                        await bot.send_message(ADMIN_ID, "Комбо оновлено автоматично!")
+            r.raise_for_status() # Викликає HTTPError для 4xx/5xx
+            
+            new = r.text.strip()
+            if new and new != combo_text:
+                logging.info(f"Комбо оновлено: {new[:30]}...")
+                combo_text = new
+                save()
+                if ADMIN_ID:
+                    await bot.send_message(ADMIN_ID, "✅ Комбо оновлено автоматично!")
+            else:
+                logging.info("Комбо не змінилося або отримано пусте значення.")
+                
     except Exception as e:
         logging.error(f"Помилка fetch: {e}")
 
@@ -78,61 +99,145 @@ async def scheduler():
         await fetch()
         await asyncio.sleep(24 * 3600)
 
+# Допоміжна функція для відображення адмін-панелі
+async def render_admin_panel(c: types.CallbackQuery):
+    kb = [
+        [types.InlineKeyboardButton(text="Оновити зараз 🔄", callback_data="force")],
+        [types.InlineKeyboardButton(text="Головне меню 🏠", callback_data="start")]
+    ]
+    
+    admin_text = (
+        "<b>Панель адміністратора</b>\n\n"
+        f"Поточне комбо:\n<code>{combo_text}</code>\n\n"
+        f"URL для автооновлення: <code>{source_url or 'Не встановлено'}</code>\n\n"
+        "Для зміни URL використовуйте команду: <code>/seturl &lt;URL&gt;</code>"
+    )
+
+    try:
+        await c.message.edit_text(
+            admin_text,
+            reply_markup=types.InlineKeyboardMarkup(inline_keyboard=kb)
+        )
+    except TelegramBadRequest as e:
+        if "message is not modified" in str(e):
+            logging.info("Admin panel message content is identical, skipping edit.")
+        else:
+            logging.error(f"Помилка редагування адмін-панелі: {e}")
+
 # === Хендлери ===
+
 @dp.message(CommandStart())
 async def start(m: types.Message):
-    kb = [[types.InlineKeyboardButton(text="Отримати комбо", callback_data="getcombo")]]
+    kb = [[types.InlineKeyboardButton(text="Отримати комбо 🔑", callback_data="getcombo")]]
     if m.from_user.id == ADMIN_ID:
-        kb.append([types.InlineKeyboardButton(text="Адмінка", callback_data="admin")])
-    await m.answer("Привіт! @CryptoComboDaily\nНатисни кнопку:", reply_markup=types.InlineKeyboardMarkup(inline_keyboard=kb))
+        kb.append([types.InlineKeyboardButton(text="Адмінка ⚙️", callback_data="admin")])
+        
+    await m.answer("Привіт! @CryptoComboDaily\nНатисни кнопку:", 
+                   reply_markup=types.InlineKeyboardMarkup(inline_keyboard=kb))
 
 @dp.callback_query(F.data == "getcombo")
 async def show_combo(c: types.CallbackQuery):
-    await c.message.edit_text(
-        f"<b>Комбо на {datetime.now():%d.%m.%Y}</b>\n\n{combo_text}",
-        parse_mode="HTML",
-        reply_markup=types.InlineKeyboardMarkup(inline_keyboard=[
-            [types.InlineKeyboardButton(text="Оновити", callback_data="getcombo")]
-        ])
-    )
+    # ФІКС 1: Підтверджуємо колбек, щоб кнопка не зависала
+    await c.answer("Оновлення комбо...")
+    
+    combo_markup = types.InlineKeyboardMarkup(inline_keyboard=[
+         [types.InlineKeyboardButton(text="Оновити 🔄", callback_data="getcombo")]
+    ])
+    
+    try:
+        # ФІКС 2: Додаємо try/except для безпечного редагування
+        await c.message.edit_text(
+            f"<b>Комбо на {datetime.now():%d.%m.%Y}</b>\n\n{combo_text}",
+            reply_markup=combo_markup
+        )
+    except TelegramBadRequest as e:
+        if "message is not modified" in str(e):
+            # Ігноруємо, якщо контент не змінився
+            pass
+        else:
+            logging.error(f"Помилка редагування комбо: {e}")
+
 
 @dp.callback_query(F.data == "admin")
 async def admin_panel(c: types.CallbackQuery):
-    if c.from_user.id != ADMIN_ID: return
-    await c.message.edit_text(
-        f"Адмінка\nURL: {source_url or 'не встановлено'}",
-        reply_markup=types.InlineKeyboardMarkup(inline_keyboard=[
-            [types.InlineKeyboardButton(text="Оновити зараз", callback_data="force")]
-        ])
-    )
+    # ФІКС 3: Підтверджуємо колбек
+    await c.answer() 
+    
+    if c.from_user.id != ADMIN_ID: 
+        await c.message.answer("У вас немає доступу до панелі адміністратора.")
+        return
+        
+    # Використовуємо допоміжну функцію для рендерингу
+    await render_admin_panel(c)
 
 @dp.callback_query(F.data == "force")
 async def force(c: types.CallbackQuery):
+    # ФІКС 4: Підтверджуємо колбек
+    await c.answer("Запускаю оновлення...")
+    
     if c.from_user.id != ADMIN_ID: return
+    
     await fetch()
-    await c.answer("Оновлено!")
+    
+    # Оновлюємо адмін-панель після fetch, щоб показати новий URL/комбо
+    await render_admin_panel(c) 
+
+@dp.callback_query(F.data == "start")
+async def go_to_start(c: types.CallbackQuery):
+    # Підтверджуємо колбек
+    await c.answer()
+    
+    kb = [[types.InlineKeyboardButton(text="Отримати комбо 🔑", callback_data="getcombo")]]
+    if c.from_user.id == ADMIN_ID:
+        kb.append([types.InlineKeyboardButton(text="Адмінка ⚙️", callback_data="admin")])
+
+    try:
+        await c.message.edit_text(
+            "Привіт! @CryptoComboDaily\nНатисни кнопку:",
+            reply_markup=types.InlineKeyboardMarkup(inline_keyboard=kb)
+        )
+    except TelegramBadRequest:
+        pass
+
 
 @dp.message(F.text.startswith("/seturl"))
 async def seturl(m: types.Message):
-    if m.from_user.id != ADMIN_ID: return
+    if m.from_user.id != ADMIN_ID: 
+        await m.answer("У вас немає доступу до цієї команди.")
+        return
+        
     try:
         global source_url
-        source_url = m.text.split(maxsplit=1)[1].strip()
+        url_input = m.text.split(maxsplit=1)
+        if len(url_input) < 2:
+            await m.answer("❌ Використання: <code>/seturl https://...</code>")
+            return
+            
+        source_url = url_input[1].strip()
         save()
-        await m.answer(f"URL збережено:\n{source_url}")
-        await fetch()  # ТУТ ГОЛОВНЕ — ОНОВЛЮЄМО ОДРАЗУ!
-    except:
-        await m.answer("Використання: /seturl https://...")
+        await m.answer(f"✅ URL збережено:\n<code>{source_url}</code>")
+        await fetch() # ОНОВЛЮЄМО ОДРАЗУ!
+    except Exception as e:
+        logging.error(f"Помилка у seturl: {e}")
+        await m.answer("❌ Помилка при встановленні URL.")
 
 # === Webhook ===
 async def on_startup(_):
-    await bot.set_webhook(WEBHOOK_URL)
-    asyncio.create_task(scheduler())
-    logging.info("БОТ ЗАПУЩЕНО — ВСЕ ПРАЦЮЄ")
+    # Встановлюємо webhook
+    try:
+        await bot.set_webhook(WEBHOOK_URL)
+        # Запускаємо планувальник в окремому завданні
+        asyncio.create_task(scheduler())
+        logging.info(f"БОТ ЗАПУЩЕНО — Webhook: {WEBHOOK_URL}")
+    except TelegramUnauthorizedError:
+        logging.critical("КРИТИЧНА ПОМИЛКА: Неправильний BOT_TOKEN. Перевірте змінні оточення!")
+        await bot.session.close() 
+        raise
 
 app = web.Application()
 app.on_startup.append(on_startup)
 SimpleRequestHandler(dispatcher=dp, bot=bot).register(app, path=WEBHOOK_PATH)
 
 if __name__ == "__main__":
+    # ВИКОРИСТОВУЄМО ПОРТ ЗІ ЗМІННОЇ ОТОЧЕННЯ
     web.run_app(app, host="0.0.0.0", port=PORT)
