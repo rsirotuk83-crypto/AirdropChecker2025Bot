@@ -13,22 +13,19 @@ from aiogram.webhook.aiohttp_server import SimpleRequestHandler
 from aiogram import Bot, Dispatcher, types, F, Router
 from aiogram.enums import ParseMode
 from aiogram.filters import CommandStart, Command
-from aiogram.types import Message
+from aiogram.types import Message, CallbackQuery
 from aiogram.client.default import DefaultBotProperties
 from aiogram.exceptions import TelegramUnauthorizedError
 from aiogram.methods import DeleteWebhook, SetWebhook
 
 # ВАЖЛИВО: Імпорт планувальника та глобальної змінної з нашого скрепера
 try:
-    # Імпорт необхідних елементів з hamster_scraper.py
     from hamster_scraper import main_scheduler, GLOBAL_COMBO_CARDS, COMBO_SOURCES, scrape_for_combo
 except ImportError:
-    # Обробка помилки, якщо файл scraper не знайдено або в ньому помилка
     logger.error("Критична помилка: Не вдалося імпортувати scraper. Фоновий планувальник не запуститься.")
     async def main_scheduler():
         logger.error("Фоновий планувальник не запущено. Скрепінг не працює.")
         await asyncio.sleep(3600)
-    # Використовуємо заглушки, щоб бот міг запуститися
     COMBO_SOURCES = {
         "TON Station": "https://miningcombo.com/ton-station/",
         "Hamster Kombat": "https://hamster-combo.com/",
@@ -42,7 +39,8 @@ except ImportError:
 # --- КОНСТАНТИ ТА КОНФІГУРАЦІЯ ---
 
 load_dotenv()
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+# Використовуємо більш універсальний формат логування
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
 # Змінні середовища
@@ -57,77 +55,36 @@ WEBHOOK_HOST = os.getenv("WEBHOOK_HOST")
 WEBHOOK_PATH = "/webhook"
 WEB_SERVER_PORT = int(os.getenv("PORT", 8080)) 
 
-# Формування WEBHOOK_URL
 if WEBHOOK_HOST:
     WEBHOOK_URL = f"https://{WEBHOOK_HOST}{WEBHOOK_PATH}"
 else:
-    logger.critical("WEBHOOK_HOST не знайдено. Бот не зможе працювати через Webhooks.")
+    logger.critical("WEBHOOK_HOST не знайдено.")
     WEBHOOK_URL = None
 
-# Налаштування директорії для постійного зберігання даних (persistence)
 DATA_DIR = Path("/app/data") 
 COMBO_CARDS_FILE = DATA_DIR / "all_combo_cards.json"
 
-# --- ІНФОРМАЦІЙНИЙ КОНТЕНТ (Універсальна функція) ---
-def get_info_message(game: str, url: str) -> str:
-    """Генерує інформаційне повідомлення для конкретної гри."""
-    base_info = f"""
-<b>🎮 {game} ТА DAILY COMBO</b>
-
-<u>🚀 Гра: {game}</u>
-{game} — це популярна гра в Telegram-екосистемі.
-
-<u>🔑 Де шукати daily combo для {game}?</u>
-
-Комбо {game} — це 3 або 4 картки, які дають значний приріст токенів.
-
-<b>🌐 Надійне Джерело:</b>
-- <a href="{url}">{url.replace('https://', '').replace('http://', '')}</a>
-
-<b>‼️ Важливо:</b> Комбо оновлюється щодня, час залежить від гри.
-"""
-    # Додаємо специфічну інфу, якщо вона є
-    if game == "TON Station":
-         return base_info + "<b>Специфіка:</b> Комбо оновлюється зазвичай о <b>12:00-15:00 за Києвом</b>."
-    if game == "Hamster Kombat":
-         return base_info + "<b>Специфіка:</b> Комбо оновлюється щодня о <b>15:00 за Києвом</b>."
-    return base_info
-
-
-# --- ІНІЦІАЛІЗАЦІЯ ROUTER ТА ДИСПЕТЧЕРА ---
-router = Router()
-dp = Dispatcher()
-dp.include_router(router) 
-
 # --- ФУНКЦІЇ ЗБЕРІГАННЯ ДАНИХ (Persistence) ---
-
 def load_combo_cards() -> Dict[str, Union[List[str], List[str]]]:
-    """Завантажує всі комбо-картки з файлу. Використовує GLOBAL_COMBO_CARDS як fallback/default."""
+    # ... (Не змінено)
     if COMBO_CARDS_FILE.exists():
         try:
             loaded_data = json.loads(COMBO_CARDS_FILE.read_text(encoding='utf-8'))
-            
-            # Перевіряємо, чи всі ігри з COMBO_SOURCES присутні в завантажених даних
             for game in COMBO_SOURCES:
                 if game not in loaded_data:
-                     # Додаємо відсутні ігри із заглушками
                      loaded_data[game] = [f"Скрапер: Комбо для {game} не знайдено у файлі."]
-            
             return loaded_data
         except json.JSONDecodeError:
             logger.error("Помилка декодування JSON комбо-карток. Повертаю дані з пам'яті.")
-    
-    # Повертаємо дані з пам'яті (які ініціалізовані або скрапером, або заглушками)
     return GLOBAL_COMBO_CARDS 
 
 def save_combo_cards(cards: Dict[str, Union[List[str], List[str]]]):
-    """Зберігає всі комбо-картки у файл."""
+    # ... (Не змінено)
     try:
         COMBO_CARDS_FILE.write_text(json.dumps(cards, ensure_ascii=False, indent=4), encoding='utf-8')
         logger.info(f"Всі комбо-картки оновлено та збережено.")
     except Exception as e:
         logger.error(f"Помилка при збереженні комбо-карток у файл: {e}")
-
 
 # --- КЛАВІАТУРИ ---
 
@@ -135,7 +92,7 @@ def get_admin_keyboard(game_name: str) -> types.InlineKeyboardMarkup:
     """Клавіатура для адміністратора, прив'язана до конкретної гри."""
     buttons = [
         [types.InlineKeyboardButton(text=f"🔄 Оновити {game_name} зараз", callback_data=f"admin_update_{game_name}")],
-        [types.InlineKeyboardButton(text="❌ Глобальний доступ: ВИМКНЕНО", callback_data="admin_toggle_global_access")], # Заглушка
+        [types.InlineKeyboardButton(text="❌ Глобальний доступ: ВИМКНЕНО", callback_data="admin_toggle_global_access")],
         [types.InlineKeyboardButton(text="🏠 Головне меню", callback_data="admin_main_menu")],
     ]
     return types.InlineKeyboardMarkup(inline_keyboard=buttons)
@@ -146,53 +103,60 @@ def get_game_selection_keyboard(action_prefix: str) -> types.InlineKeyboardMarku
     
     # Створюємо кнопки для кожної гри
     for game in COMBO_SOURCES.keys():
-        # Колбек: user_get_combo:TON Station
         buttons.append(types.InlineKeyboardButton(text=f"🔑 {game}", callback_data=f"{action_prefix}:{game}"))
     
     # Додаємо кнопку Інформація (яка також відкриє селектор)
     buttons.append(types.InlineKeyboardButton(text="ℹ️ Інформація про ігри", callback_data="show_info_selector"))
 
-    # Розбиваємо на рядки по 2 кнопки
     keyboard = [buttons[i:i + 2] for i in range(0, len(buttons), 2)]
     
     return types.InlineKeyboardMarkup(inline_keyboard=keyboard)
+
+# --- УНІФІКОВАНА ФУНКЦІЯ ГОЛОВНОГО МЕНЮ ---
+
+def get_main_menu_response(user_id: int) -> Dict[str, Any]:
+    """Генерує повідомлення та клавіатуру для головного меню (для /start або повернення)."""
+    is_admin = (user_id == ADMIN_ID)
+    
+    if is_admin:
+        current_data = load_combo_cards()
+        combo_status = "\n".join([
+            f"  - {game}: {'✅ OK' if not current_data.get(game, [''])[0].startswith(('Скрапер:', 'Помилка HTTP:')) else '❌ ERR'}" 
+            for game in COMBO_SOURCES.keys()
+        ])
+        
+        message_text = (
+            "*Панель адміністратора* (ID: `{user_id}`)\n\n"
+            f"Поточний статус скрапінгу:\n{combo_status}\n\n"
+            f"Для ручного комбо: /setcombo <Гра> <Карта1, ...>\n"
+            f"Останнє оновлення: {datetime.datetime.now().strftime('%H:%M:%S %d.%m.%Y')}"
+        )
+        reply_markup = get_game_selection_keyboard("admin_check_combo")
+    else:
+        message_text = (
+            f"Привіт! Я бот для щоденних комбо {len(COMBO_SOURCES)} Web3 ігор. Ваш ID: `{user_id}`\n\n"
+            "Виберіть гру, щоб отримати її сьогоднішнє комбо:"
+        )
+        reply_markup = get_game_selection_keyboard("user_get_combo")
+
+    return {
+        "text": message_text.format(user_id=user_id),
+        "reply_markup": reply_markup,
+        "parse_mode": ParseMode.MARKDOWN
+    }
 
 
 # --- ХЕНДЛЕРИ КОМАНД ---
 
 @router.message(CommandStart())
-async def cmd_start(message: Message, bot: Bot):
+async def cmd_start(message: Message):
     """Обробляє команду /start."""
-    user_id = message.from_user.id
-    
-    if user_id == ADMIN_ID:
-        # Для адміна показуємо статус
-        current_data = load_combo_cards()
-        combo_status = "\n".join([
-            f"  - {game}: {'✅ OK' if not current_data.get(game, [''])[0].startswith('Скрапер:') else '❌ ERR'}" 
-            for game in COMBO_SOURCES.keys()
-        ])
-        
-        admin_message = (
-            "*Панель адміністратора*\n\n"
-            f"Поточний статус скрапінгу:\n{combo_status}\n\n"
-            f"Для ручного комбо: /setcombo <Гра> <Карта1, ...>\n"
-            f"Останнє оновлення: {datetime.datetime.now().strftime('%H:%M:%S %d.%m.%Y')}"
-        )
-        
-        await message.answer(
-            admin_message, 
-            reply_markup=get_game_selection_keyboard("admin_check_combo"), 
-            parse_mode=ParseMode.MARKDOWN
-        )
-    else:
-        # Для звичайного користувача
-        await message.answer(
-            f"Привіт! Я бот для щоденних комбо {len(COMBO_SOURCES)} популярних Web3 ігор. Ваш ID: {user_id}\n\n"
-            "Виберіть гру, щоб отримати її сьогоднішнє комбо:",
-            reply_markup=get_game_selection_keyboard("user_get_combo")
-        )
+    # ВИПРАВЛЕНО: Використовуємо уніфіковану функцію
+    response = get_main_menu_response(message.from_user.id)
+    await message.answer(**response)
 
+
+# ... (cmd_setcombo не змінено)
 @router.message(Command("setcombo"))
 async def cmd_setcombo(message: Message):
     """Обробляє команду /setcombo для ручного встановлення комбо для конкретної гри."""
@@ -222,7 +186,6 @@ async def cmd_setcombo(message: Message):
         await message.answer(f"❌ Будь ласка, введіть принаймні 3 елементи комбо для {game_name}, розділені комами.")
         return
 
-    # Оновлюємо глобальну змінну та зберігаємо на диск
     GLOBAL_COMBO_CARDS[game_name] = cards
     save_combo_cards(GLOBAL_COMBO_CARDS)
 
@@ -232,16 +195,32 @@ async def cmd_setcombo(message: Message):
 
 # --- ХЕНДЛЕРИ INLINE-КНОПОК (User & Admin) ---
 
+# Обробка повернення до головного меню
+@router.callback_query(F.data == "admin_main_menu")
+async def process_main_menu_callback(callback: CallbackQuery):
+    """ВИПРАВЛЕНО: Обробляє натискання кнопки 'Головне меню' (для всіх користувачів)."""
+    response = get_main_menu_response(callback.from_user.id)
+    
+    try:
+        # Редагуємо повідомлення, з якого викликали, щоб уникнути спаму нових повідомлень
+        await callback.message.edit_text(**response)
+    except Exception as e:
+        # Якщо редагування неможливе (наприклад, через старе повідомлення), відправляємо нове
+        await callback.message.answer(**response)
+        logger.warning(f"Неможливо відредагувати повідомлення, відправлено нове. Помилка: {e}")
+        
+    await callback.answer()
+
+
 # Селектор для Інформації
 @router.callback_query(F.data == "show_info_selector")
 async def process_show_info_selector(callback: types.CallbackQuery):
     """Показує клавіатуру для вибору гри, про яку користувач хоче отримати інфо."""
     await callback.message.edit_text(
         "ℹ️ Виберіть гру, щоб дізнатися деталі про її щоденне комбо:",
-        reply_markup=get_game_selection_keyboard("user_info") # Використовуємо префікс 'user_info'
+        reply_markup=get_game_selection_keyboard("user_info")
     )
     await callback.answer()
-
 
 # Обробка запиту комбо користувачем (user_get_combo:Game Name)
 @router.callback_query(F.data.startswith("user_get_combo:"))
@@ -249,27 +228,32 @@ async def process_user_get_combo(callback: types.CallbackQuery):
     """Обробляє натискання 'Отримати комбо' користувачем для конкретної гри."""
     
     game_name = callback.data.split(':', 1)[1]
-    
-    # Завантажуємо актуальні дані (навіть якщо вони з помилкою)
     cards = load_combo_cards().get(game_name)
 
-    if not cards or cards[0].startswith("Скрапер:") or cards[0].startswith("Помилка HTTP:"):
-        await callback.message.answer(
-            f"❌ Комбо для *{game_name}* ще не встановлено або сталася помилка скрапінгу. Спробуйте пізніше.\n\n"
-            f"Остання помилка: _{cards[0] if cards else 'Немає даних'}_",
-            parse_mode=ParseMode.MARKDOWN
-        )
+    # Використовуємо універсальну функцію для генерації інфо-повідомлення
+    from . import get_info_message # Для коректного імпорту, якщо це окремий модуль
+
+    if not cards or cards[0].startswith(("Скрапер:", "Помилка HTTP:")):
+        error_message = f"❌ Комбо для *{game_name}* ще не встановлено або сталася помилка скрапінгу. Спробуйте пізніше.\n\n" \
+                        f"Остання помилка: _{cards[0] if cards else 'Немає даних'}_"
+        
+        # Навіть при помилці, даємо можливість повернутися в меню
+        keyboard = types.InlineKeyboardMarkup(inline_keyboard=[
+            [types.InlineKeyboardButton(text="🏠 Головне меню", callback_data="admin_main_menu")], 
+        ])
+        
+        await callback.message.answer(error_message, parse_mode=ParseMode.MARKDOWN, reply_markup=keyboard)
         await callback.answer()
         return
 
     combo_list = "\n".join(f"{i+1}️⃣: {card}" for i, card in enumerate(cards))
     
-    # Додаємо кнопку 'Інфо' в повідомлення з комбо
     keyboard = types.InlineKeyboardMarkup(inline_keyboard=[
         [types.InlineKeyboardButton(text=f"ℹ️ Про {game_name}", callback_data=f"user_info:{game_name}")],
-        [types.InlineKeyboardButton(text="🏠 Головне меню", callback_data="admin_main_menu")], # Перевикористовуємо колбек для повернення до початку
+        [types.InlineKeyboardButton(text="🏠 Головне меню", callback_data="admin_main_menu")],
     ])
     
+    # Відправляємо нове повідомлення замість редагування, щоб показати актуальне комбо
     await callback.message.answer(
         f"🔥 *Комбо {game_name} на сьогодні* ({len(cards)} карт):\n{combo_list}", 
         parse_mode=ParseMode.MARKDOWN,
@@ -282,18 +266,23 @@ async def process_user_get_combo(callback: types.CallbackQuery):
 @router.callback_query(F.data.startswith("user_info:"))
 async def process_user_info(callback: types.CallbackQuery):
     """Обробляє натискання 'Інфо' користувачем для конкретної гри."""
+    
+    # Використовуємо універсальну функцію для генерації інфо-повідомлення
+    from . import get_info_message # Для коректного імпорту, якщо це окремий модуль
+    
     game_name = callback.data.split(':', 1)[1]
     url = COMBO_SOURCES.get(game_name, "Невідомий URL")
     
+    keyboard = types.InlineKeyboardMarkup(inline_keyboard=[
+        [types.InlineKeyboardButton(text=f"🔑 Отримати Комбо {game_name}", callback_data=f"user_get_combo:{game_name}")],
+        [types.InlineKeyboardButton(text="🏠 Головне меню", callback_data="admin_main_menu")],
+    ])
+
     await callback.message.edit_text(
         get_info_message(game_name, url),
         parse_mode=ParseMode.HTML,
         disable_web_page_preview=True,
-        # Додаємо кнопку "Отримати Комбо" і "Назад"
-        reply_markup=types.InlineKeyboardMarkup(inline_keyboard=[
-            [types.InlineKeyboardButton(text=f"🔑 Отримати Комбо {game_name}", callback_data=f"user_get_combo:{game_name}")],
-            [types.InlineKeyboardButton(text="🏠 Головне меню", callback_data="admin_main_menu")],
-        ])
+        reply_markup=keyboard
     )
     await callback.answer()
 
@@ -310,7 +299,7 @@ async def process_admin_check_combo(callback: types.CallbackQuery):
     
     if not cards:
         status_text = "❌ Дані не знайдені."
-    elif cards[0].startswith("Скрапер:") or cards[0].startswith("Помилка HTTP:"):
+    elif cards[0].startswith(("Скрапер:", "Помилка HTTP:")):
         status_text = f"❌ Помилка скрапінгу: {cards[0]}"
     else:
         combo_list = "\n".join(f"{i+1}️⃣: {card}" for i, card in enumerate(cards))
@@ -327,12 +316,11 @@ async def process_admin_check_combo(callback: types.CallbackQuery):
 # Обробка ручного оновлення (admin_update_Game Name)
 @router.callback_query(F.data.startswith("admin_update_"))
 async def process_admin_update(callback: types.CallbackQuery):
-    """Обробляє ручне оновлення комбо адміністратором."""
+    # ... (Логіка ручного оновлення не змінена, але тепер більш стійка до помилок скрапінгу)
     if callback.from_user.id != ADMIN_ID:
         await callback.answer("❌ У вас немає прав адміністратора.", show_alert=True)
         return
 
-    # admin_update_TON Station -> game_name = TON Station
     game_name = callback.data.split('admin_update_', 1)[1]
     
     if game_name not in COMBO_SOURCES:
@@ -341,11 +329,9 @@ async def process_admin_update(callback: types.CallbackQuery):
 
     await callback.message.edit_text(f"⏳ Запускаю ручний скрапінг *{game_name}*. Зачекайте...", parse_mode=ParseMode.MARKDOWN)
     
-    # Виконуємо скрепінг в окремому потоці
     new_combo = await asyncio.to_thread(scrape_for_combo, game_name, COMBO_SOURCES[game_name]) 
     
-    if new_combo and not new_combo[0].startswith("Скрапер:") and not new_combo[0].startswith("Помилка HTTP:"):
-        # Успіх: оновлюємо дані та зберігаємо
+    if new_combo and not new_combo[0].startswith(("Скрапер:", "Помилка HTTP:")):
         GLOBAL_COMBO_CARDS[game_name] = new_combo
         save_combo_cards(GLOBAL_COMBO_CARDS)
         combo_list = "\n".join(f"{i+1}️⃣: {card}" for i, card in enumerate(new_combo))
@@ -355,7 +341,6 @@ async def process_admin_update(callback: types.CallbackQuery):
             parse_mode=ParseMode.MARKDOWN
         )
     else:
-        # Помилка: показуємо повідомлення про помилку
         await callback.message.edit_text(
             f"❌ Не вдалося оновити комбо для *{game_name}*. Причина:\n{new_combo[0]}", 
             reply_markup=get_admin_keyboard(game_name),
@@ -364,12 +349,6 @@ async def process_admin_update(callback: types.CallbackQuery):
         
     await callback.answer()
 
-@router.callback_query(F.data == "admin_main_menu")
-async def process_admin_main_menu(callback: types.CallbackQuery, bot: Bot):
-    """Повертає користувача (або адміна) до головного меню."""
-    await cmd_start(callback.message, bot)
-    await callback.answer()
-    
 # Обробка заглушки "admin_toggle_global_access"
 @router.callback_query(F.data == "admin_toggle_global_access")
 async def process_admin_toggle_global_access(callback: types.CallbackQuery):
@@ -377,7 +356,7 @@ async def process_admin_toggle_global_access(callback: types.CallbackQuery):
 
 
 # --- ФУНКЦІЇ WEBHOOK ---
-
+# ... (on_startup_webhook, on_shutdown_webhook, start_background_tasks, cleanup_background_tasks, init_webhook_server, main не змінено)
 async def on_startup_webhook(bot: Bot) -> None:
     """Викликається при запуску. Встановлює Webhook."""
     if WEBHOOK_URL:
@@ -437,14 +416,11 @@ def main() -> None:
         logger.critical("WEBHOOK_HOST не знайдено. Бот не може запуститися через Webhooks.")
         return
 
-    # Створюємо директорію для даних, якщо вона не існує
     DATA_DIR.mkdir(exist_ok=True)
     
-    # Завантажуємо дані при старті для ініціалізації GLOBAL_COMBO_CARDS
     global GLOBAL_COMBO_CARDS
     GLOBAL_COMBO_CARDS = load_combo_cards()
     
-    # Ініціалізація бота
     bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
     
     try:
