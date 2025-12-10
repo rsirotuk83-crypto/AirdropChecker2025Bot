@@ -36,15 +36,13 @@ SOURCES = {
     "cattea": "https://miningcombo.com/cattea/",
 }
 
-# ================== ВИПРАВЛЕНІ ПАРСЕРИ ==================
+# ================== ОНОВЛЕНІ ПАРСЕРИ (працюють 10.12.2025) ==================
 def parse_hamster(html: str) -> str:
     soup = BeautifulSoup(html, "html.parser")
-    # Гнучкий пошук заголовка з "combo"
     header = soup.find(lambda tag: tag.name in ["h1", "h2", "h3", "h4"] and "combo" in tag.get_text(strip=True).lower())
     if not header:
         return "⏳ <b>Комбо ще не опубліковане</b>"
     cards = []
-    # Шукаємо великі літери в різних тегах після заголовка
     for tag in header.find_all_next(["p", "li", "div", "span", "strong"]):
         text = tag.get_text(strip=True)
         if text.isupper() and 4 <= len(text) <= 30 and text not in cards:
@@ -58,14 +56,17 @@ def parse_hamster(html: str) -> str:
 def parse_tapswap(html: str) -> str:
     soup = BeautifulSoup(html, "html.parser")
     codes = []
-    for block in soup.find_all("div"):
-        text = block.get_text(strip=True)
-        if "code" in text.lower():
-            words = text.split()
-            if words:
-                code = words[-1]
-                if code.isalnum() and len(code) >= 4:
-                    codes.append(code)
+    # Більш гнучкий пошук: будь-який блок з "code" або "cipher"
+    for tag in soup.find_all(["p", "div", "span", "strong"]):
+        text = tag.get_text(strip=True)
+        if "code" in text.lower() or "cipher" in text.lower():
+            # Беремо останнє слово або слово після "code:"
+            parts = text.split()
+            for part in parts[::-1]:
+                if part.isalnum() and len(part) >= 4:
+                    codes.append(part.upper())
+                    break
+    codes = list(dict.fromkeys(codes))  # видаляємо дублі
     return "\n".join(f"• <b>{c}</b>" for c in codes[:5]) or "⏳ <b>Комбо ще не знайдено</b>"
 
 def parse_blum(html: str) -> str:
@@ -81,13 +82,13 @@ def parse_blum(html: str) -> str:
 
 def parse_cattea(html: str) -> str:
     soup = BeautifulSoup(html, "html.parser")
-    if "searching" in html.lower():
+    if "searching" in html.lower() or "coming soon" in html.lower():
         return "⏳ <b>Комбо ще не знайдено</b>"
-    header = soup.find(lambda tag: tag.name in ["h2", "h3"] and "cattea" in tag.get_text(strip=True).lower())
+    header = soup.find(lambda tag: tag.name in ["h2", "h3", "h4"] and "cattea" in tag.get_text(strip=True).lower())
     if not header:
         return "⏳ <b>Комбо ще не знайдено</b>"
     cards = []
-    for tag in header.find_all_next(["p", "li", "div"]):
+    for tag in header.find_all_next(["p", "li", "div", "strong"]):
         text = tag.get_text(strip=True)
         if text and len(text) > 3 and text not in cards:
             cards.append(text)
