@@ -10,6 +10,7 @@ from aiogram.filters import CommandStart
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
 from aiogram.webhook.aiohttp_server import SimpleRequestHandler
+from aiogram.exceptions import TelegramBadRequest
 
 # ================== CONFIG & LOGGING ==================
 BOT_TOKEN = os.getenv("BOT_TOKEN")
@@ -51,28 +52,28 @@ def _find_combo_image_url(soup: BeautifulSoup, game_name: str, base_url: str) ->
     
     # Ключові слова, які вказують на комбо
     keywords = ["combo", "cipher", "комбо", "daily", "щоденне", game_name.lower().replace(" ", "-")]
-    # Слова, які вказують на логотип чи іконку, і мають бути виключені
-    EXCLUDED_KEYWORDS = ["logo", "icon", "favicon", "cropped", "74x95"] 
+    # Слова, які вказують на логотип, іконку чи заглушку
+    EXCLUDED_KEYWORDS = ["logo", "icon", "favicon", "cropped", "placeholder", "74x95", "150x150"] 
     
-    # Спробуємо знайти зображення всередині основного контенту статті (типово для WordPress)
     content_area = soup.find(["article", "div"], class_=lambda x: x and ('entry-content' in x or 'main-content' in x or 'post-content' in x))
     if not content_area:
-        content_area = soup # Fallback to searching the whole page
+        content_area = soup
 
     for img in content_area.find_all("img"):
         src = img.get("src", "")
         alt = img.get("alt", "")
         title = img.get("title", "")
         
-        # 1. Виключаємо зображення, які є логотипами або іконками
         img_check_string = src.lower() + alt.lower() + title.lower()
+        
+        # 1. Виключаємо зображення за ключовими словами
         if any(exc in img_check_string for exc in EXCLUDED_KEYWORDS):
             continue
 
         # 2. Зображення має бути релевантним АБО достатньо великим
         is_relevant = any(k in img_check_string for k in keywords)
         
-        # Перевірка розміру: ігноруємо, якщо обидва розміри менше 100px (типова ознака логотипу)
+        # Перевірка розміру (фільтр малих картинок)
         is_large_enough = False
         width = img.get("width")
         height = img.get("height")
@@ -80,9 +81,8 @@ def _find_combo_image_url(soup: BeautifulSoup, game_name: str, base_url: str) ->
             if width and height and int(width) > 100 and int(height) > 100:
                 is_large_enough = True
         except ValueError:
-            pass # Ігноруємо, якщо розміри не числові
+            pass
 
-        # Приймаємо, якщо воно релевантне АБО достатньо велике
         if is_relevant or is_large_enough:
             # Вирішення відносного шляху
             if src.startswith('http'):
@@ -94,25 +94,28 @@ def _find_combo_image_url(soup: BeautifulSoup, game_name: str, base_url: str) ->
             
     return None
 
-# ================== ПАРСЕРИ ==================
+# ================== ПАРСЕРИ (З ДОДАТКОВИМ АРГУМЕНТОМ) ==================
 
-def parse_hamster(html: str) -> str:
+# Тепер парсери приймають `prefer_text: bool`
+def parse_hamster(html: str, prefer_text: bool = False) -> str:
     soup = BeautifulSoup(html, "html.parser")
     base_url = BASE_URLS["hamster"]
 
-    # 1. Спроба знайти ЗОБРАЖЕННЯ
-    image_url = _find_combo_image_url(soup, "hamster", base_url)
-    if image_url:
-        return f"__IMAGE_URL__:{image_url}"
+    # 1. Спроба знайти ЗОБРАЖЕННЯ (якщо prefer_text=False)
+    if not prefer_text:
+        image_url = _find_combo_image_url(soup, "hamster", base_url)
+        if image_url:
+            return f"__IMAGE_URL__:{image_url}"
 
-    # 2. ТЕКСТОВИЙ FALLBACK (поточна логіка)
+    # 2. ТЕКСТОВИЙ FALLBACK
     header = soup.find(lambda tag: tag.name in ["h1", "h2", "h3", "h4"] and "combo" in tag.get_text(strip=True).lower())
     if not header:
         return "⏳ <b>Комбо ще не опубліковане</b>"
     cards = []
+    # Починаємо пошук тексту одразу після заголовка
     for tag in header.find_all_next(["p", "li", "div", "span", "strong"]):
         text = tag.get_text(strip=True)
-        if text.isupper() and 4 <= len(text) <= 30 and text not in cards:
+        if text.isupper() and 4 <= len(text) <= 30 and text not in cards and "combo" not in text.lower():
             cards.append(text)
         if len(cards) >= 3:
             break
@@ -120,12 +123,14 @@ def parse_hamster(html: str) -> str:
         return "⏳ <b>Комбо ще не опубліковане</b>"
     return "\n".join(f"• <b>{c}</b>" for c in cards[:3])
 
-def parse_tapswap(html: str) -> str:
+def parse_tapswap(html: str, prefer_text: bool = False) -> str:
     soup = BeautifulSoup(html, "html.parser")
     base_url = BASE_URLS["tapswap"]
-    image_url = _find_combo_image_url(soup, "tapswap", base_url)
-    if image_url:
-        return f"__IMAGE_URL__:{image_url}"
+    
+    if not prefer_text:
+        image_url = _find_combo_image_url(soup, "tapswap", base_url)
+        if image_url:
+            return f"__IMAGE_URL__:{image_url}"
         
     codes = []
     for tag in soup.find_all(["p", "div", "span", "strong"]):
@@ -139,62 +144,67 @@ def parse_tapswap(html: str) -> str:
     codes = list(dict.fromkeys(codes))
     return "\n".join(f"• <b>{c}</b>" for c in codes[:5]) or "⏳ <b>Комбо ще не знайдено</b>"
 
-def parse_blum(html: str) -> str:
+def parse_blum(html: str, prefer_text: bool = False) -> str:
     soup = BeautifulSoup(html, "html.parser")
     base_url = BASE_URLS["blum"]
-    image_url = _find_combo_image_url(soup, "blum", base_url)
-    if image_url:
-        return f"__IMAGE_URL__:{image_url}"
+    
+    if not prefer_text:
+        image_url = _find_combo_image_url(soup, "blum", base_url)
+        if image_url:
+            return f"__IMAGE_URL__:{image_url}"
         
     codes = []
     for tag in soup.find_all(["strong", "p", "span", "div"]):
         text = tag.get_text(strip=True)
-        if text.isupper() and 5 <= len(text) <= 20 and text not in codes:
+        if text.isupper() and 5 <= len(text) <= 20 and text not in codes and "combo" not in text.lower():
             codes.append(text)
         if len(codes) >= 3:
             break
     return "\n".join(f"• <b>{c}</b>" for c in codes[:3]) or "⏳ <b>Комбо ще не знайдено</b>"
 
-def parse_cattea(html: str) -> str:
+def parse_cattea(html: str, prefer_text: bool = False) -> str:
     soup = BeautifulSoup(html, "html.parser")
     base_url = BASE_URLS["cattea"]
-    image_url = _find_combo_image_url(soup, "cattea", base_url)
-    if image_url:
-        return f"__IMAGE_URL__:{image_url}"
+    
+    if not prefer_text:
+        image_url = _find_combo_image_url(soup, "cattea", base_url)
+        if image_url:
+            return f"__IMAGE_URL__:{image_url}"
         
     if "searching" in html.lower() or "coming soon" in html.lower():
         return "⏳ <b>Комбо ще не знайдено (searching...)</b>"
+    
     header = soup.find(lambda tag: tag.name in ["h2", "h3", "h4"] and "cattea" in tag.get_text(strip=True).lower())
     if not header:
         return "⏳ <b>Комбо ще не опубліковане</b>"
     cards = []
     for tag in header.find_all_next(["p", "li", "div", "strong", "span"]):
         text = tag.get_text(strip=True)
-        if text and len(text) > 3 and text not in cards:
+        if text and len(text) > 3 and text not in cards and "combo" not in text.lower():
             cards.append(text)
         if len(cards) >= 4:
             break
     return "\n".join(f"• <b>{c}</b>" for c in cards[:4]) or "⏳ <b>Комбо ще не знайдено</b>"
 
-def parse_tonstation(html: str) -> str:
+def parse_tonstation(html: str, prefer_text: bool = False) -> str:
     soup = BeautifulSoup(html, "html.parser")
     base_url = BASE_URLS["tonstation"]
 
-    # 1. Спроба знайти ЗОБРАЖЕННЯ
-    image_url = _find_combo_image_url(soup, "ton station", base_url)
-    if image_url:
-        return f"__IMAGE_URL__:{image_url}"
+    if not prefer_text:
+        image_url = _find_combo_image_url(soup, "ton station", base_url)
+        if image_url:
+            return f"__IMAGE_URL__:{image_url}"
 
-    # 2. ТЕКСТОВИЙ FALLBACK
     if "searching" in html.lower():
         return "⏳ <b>Комбо ще не знайдено (searching...)</b>"
+    
     header = soup.find(lambda tag: tag.name in ["h2", "h3"] and "ton station" in tag.get_text(strip=True).lower())
     if not header:
         return "⏳ <b>Комбо ще не опубліковане</b>"
     cards = []
     for tag in header.find_all_next(["p", "li", "div"]):
         text = tag.get_text(strip=True)
-        if text and len(text) > 3 and text not in cards:
+        if text and len(text) > 3 and text not in cards and "combo" not in text.lower():
             cards.append(text)
         if len(cards) >= 4:
             break
@@ -227,7 +237,7 @@ def back_kb():
         [types.InlineKeyboardButton(text="<< Назад до меню", callback_data="back_to_menu")]
     ])
 
-# ================== HANDLERS (ОНОВЛЕНО) ==================
+# ================== HANDLERS (КЛЮЧОВЕ ОНОВЛЕННЯ) ==================
 
 @dp.message(CommandStart())
 async def start(m: types.Message):
@@ -235,7 +245,7 @@ async def start(m: types.Message):
 
 @dp.callback_query(F.data.in_(SOURCES.keys()))
 async def send_combo(cb: types.CallbackQuery):
-    # Використовуємо cb.message.edit_text для індикації завантаження
+    # Початковий індикатор
     await cb.message.edit_text("⏳ Отримую дані...", reply_markup=main_kb()) 
     
     game = cb.data
@@ -247,51 +257,66 @@ async def send_combo(cb: types.CallbackQuery):
         "tonstation": "🚉 TON Station"
     }[game]
 
+    # Визначаємо функцію парсера
+    parser_map = {
+        "hamster": parse_hamster,
+        "tapswap": parse_tapswap,
+        "blum": parse_blum,
+        "cattea": parse_cattea,
+        "tonstation": parse_tonstation,
+    }
+    parser_func = parser_map[game]
+    
     try:
         html = await fetch(SOURCES[game])
 
-        parser_map = {
-            "hamster": parse_hamster,
-            "tapswap": parse_tapswap,
-            "blum": parse_blum,
-            "cattea": parse_cattea,
-            "tonstation": parse_tonstation,
-        }
-        combo_result = parser_map[game](html)
-
-        # 3. Обробка результату: ЗОБРАЖЕННЯ чи ТЕКСТ
+        # Спроба 1: Парсинг із зображенням
+        combo_result = parser_func(html, prefer_text=False)
+        is_image_attempt = False
+        
         if combo_result.startswith("__IMAGE_URL__:") and len(combo_result) > 14:
             image_url = combo_result[14:]
+            is_image_attempt = True
             
-            log.info(f"Sending image for {game} from URL: {image_url}") # Логування URL для діагностики
+            log.info(f"Attempting to send image for {game} from URL: {image_url}")
 
             # Надіслати ЗОБРАЖЕННЯ
             caption = f"<b>{name}</b>\nКомбо на <b>{datetime.now():%d.%m.%Y}</b>\n\n✅ <b>Комбо знайдено як зображення.</b>"
             
-            # bot.send_photo автоматично видалить попередній індикатор
-            await bot.send_photo(
-                chat_id=cb.message.chat.id,
-                photo=image_url,
-                caption=caption,
-                reply_markup=back_kb(),
-                parse_mode=ParseMode.HTML
-            )
-            
-            # Видалити старе текстове повідомлення-індикатор (якщо bot.send_photo його не видалив)
             try:
-                # В ідеалі ми хочемо видалити лише те повідомлення, яке було "⏳ Отримую дані..."
+                await bot.send_photo(
+                    chat_id=cb.message.chat.id,
+                    photo=image_url,
+                    caption=caption,
+                    reply_markup=back_kb(),
+                    parse_mode=ParseMode.HTML
+                )
+                # Якщо успішно, видаляємо старий індикатор
                 await cb.message.delete()
-            except Exception as e:
-                log.warning(f"Could not delete old message after sending photo: {e}")
+                return # Успіх, виходимо
                 
-        else:
-            # Надіслати ТЕКСТ (стандартна логіка)
+            except TelegramBadRequest as e:
+                # Обробка помилок завантаження зображень (failed to get HTTP URL content, wrong type)
+                if "failed to get HTTP URL content" in str(e) or "wrong type of the web page content" in str(e):
+                    log.warning(f"Image send failed for {game} ({image_url}). Reason: {e}. Falling back to text.")
+                    # Скидаємо прапор is_image_attempt, щоб перейти до текстового парсингу
+                    is_image_attempt = False
+                    
+                else:
+                    # Інша невідома помилка Telegram, виводимо її користувачеві
+                    raise e 
+        
+        # Спроба 2: Парсинг лише тексту, якщо спроба зображення провалилася або не було знайдено зображення
+        if not is_image_attempt:
+            # Парсимо лише текст, ігноруючи пошук зображень
+            combo_result = parser_func(html, prefer_text=True)
             text = f"<b>{name}</b>\nКомбо на <b>{datetime.now():%d.%m.%Y}</b>\n\n{combo_result}"
             await cb.message.edit_text(text, reply_markup=back_kb())
 
+
     except Exception as e:
-        log.error(f"Error for {game}: {e}")
-        text = f"❌ <b>Помилка для {name}</b>\nСпробуйте пізніше."
+        log.error(f"Critical Error for {game}: {e}")
+        text = f"❌ <b>Критична помилка для {name}</b>\nСпробуйте пізніше. Деталі: {type(e).__name__}"
         try:
             await cb.message.edit_text(text, reply_markup=back_kb())
         except:
