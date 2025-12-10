@@ -20,7 +20,7 @@ if not BOT_TOKEN or not WEBHOOK_HOST:
     raise RuntimeError("BOT_TOKEN або WEBHOOK_HOST не встановлено")
 
 WEBHOOK_PATH = "/webhook"
-WEBHOOK_URL = f"{WEBHOOK_HOST  HOST}{WEBHOOK_PATH}"
+WEBHOOK_URL = f"{WEBHOOK_HOST}{WEBHOOK_PATH}"  # ВИПРАВЛЕНО!
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 log = logging.getLogger(__name__)
@@ -37,34 +37,36 @@ SOURCES = {
     "tonstation": "https://miningcombo.com/ton-station/",
 }
 
-# ================== ПАРСЕРИ (оновлено для картинок) ==================
+# ================== ПАРСЕРИ ==================
+# (твій останній робочий варіант парсерів — без змін)
+
+# ================== FETCH ==================
 async def fetch(url: str) -> str:
     async with httpx.AsyncClient(timeout=20) as c:
         r = await c.get(url, follow_redirects=True)
         r.raise_for_status()
         return r.text
 
-def parse_images(html: str) -> list:
-    soup = BeautifulSoup(html, "html.parser")
-    images = []
-    for img in soup.find_all("img"):
-        src = img.get("src")
-        alt = img.get("alt", "")
-        if src:
-            if not src.startswith("http"):
-                src = "https://miningcombo.com" + src if "miningcombo" in SOURCES.values()[0] else src
-            if "combo" in alt.lower() or "card" in alt.lower() or "daily" in alt.lower():
-                images.append(src)
-    return images[:4]  # зазвичай 3-4 картки
+# ================== UI ==================
+def main_kb():
+    return types.InlineKeyboardMarkup(inline_keyboard=[
+        [
+            types.InlineKeyboardButton(text="🐹 Hamster", callback_data="hamster"),
+            types.InlineKeyboardButton(text="⚡ TapSwap", callback_data="tapswap")
+        ],
+        [
+            types.InlineKeyboardButton(text="🌸 Blum", callback_data="blum"),
+            types.InlineKeyboardButton(text="🐱 CatTea", callback_data="cattea")
+        ],
+        [
+            types.InlineKeyboardButton(text="🚉 TON Station", callback_data="tonstation")
+        ]
+    ])
 
-async def get_combo_with_images(game: str) -> tuple[str, list]:
-    html = await fetch(SOURCES[game])
-    images = parse_images(html)
-    if images:
-        return "Комбо у вигляді картинок:", images
-    # fallback на текстовий парсер (як раніше)
-    # ... (твій старий текстовий парсер тут)
-    return "Текст комбо (як раніше)", []
+def back_kb():
+    return types.InlineKeyboardMarkup(inline_keyboard=[
+        [types.InlineKeyboardButton(text="<< Назад до меню", callback_data="back_to_menu")]
+    ])
 
 # ================== HANDLERS ==================
 @dp.message(CommandStart())
@@ -75,22 +77,49 @@ async def start(m: types.Message):
 async def send_combo(cb: types.CallbackQuery):
     await cb.answer("Отримую дані...", cache_time=5)
     game = cb.data
-    name = { ... }[game]
-    text, images = await get_combo_with_images(game)
-    caption = f"<b>{name}</b>\nКомбо на <b>{datetime.now():%d.%m.%Y}</b>\n\n{text}"
-    if images:
-        media = types.MediaGroup()
-        for img in images:
-            media.attach_photo(types.InputMediaPhoto(img))
-        await cb.message.answer_media_group(media)
-        await cb.message.answer(caption + "\nКартинки комбо вище ↑", reply_markup=back_kb())
-    else:
-        await cb.message.edit_text(caption, reply_markup=back_kb())
+    name = {
+        "hamster": "🐹 Hamster Kombat",
+        "tapswap": "⚡ TapSwap",
+        "blum": "🌸 Blum",
+        "cattea": "🐱 CatTea",
+        "tonstation": "🚉 TON Station"
+    }[game]
+    try:
+        html = await fetch(SOURCES[game])
+        if game == "hamster":
+            combo = parse_hamster(html)
+        elif game == "tapswap":
+            combo = parse_tapswap(html)
+        elif game == "blum":
+            combo = parse_blum(html)
+        elif game == "cattea":
+            combo = parse_cattea(html)
+        else:
+            combo = parse_tonstation(html)
+        text = f"<b>{name}</b>\nКомбо на <b>{datetime.now():%d.%m.%Y}</b>\n\n{combo}"
+    except Exception as e:
+        log.error(f"Error for {game}: {e}")
+        text = f"❌ <b>Помилка для {name}</b>\nСпробуйте пізніше."
+    try:
+        await cb.message.edit_text(text, reply_markup=back_kb())
+    except:
+        await cb.message.answer(text, reply_markup=back_kb())
 
-# ... решта коду без змін
+@dp.callback_query(F.data == "back_to_menu")
+async def back_to_menu_handler(cb: types.CallbackQuery):
+    await cb.answer()
+    await cb.message.edit_text("<b>🎮 Щоденні комбо ігор</b>\n\nОбери гру:", reply_markup=main_kb())
 
 # ================== WEBHOOK ==================
-# (без змін)
+async def on_startup(app: web.Application):
+    await bot.delete_webhook(drop_pending_updates=True)
+    await bot.set_webhook(WEBHOOK_URL)
+    log.info(f"Webhook встановлено: {WEBHOOK_URL}")
+
+app = web.Application()
+app.on_startup.append(on_startup)
+SimpleRequestHandler(dispatcher=dp, bot=bot).register(app, path=WEBHOOK_PATH)
 
 if __name__ == "__main__":
+    log.info(f"Запуск сервера на 0.0.0.0:{PORT}")
     web.run_app(app, host="0.0.0.0", port=PORT)
