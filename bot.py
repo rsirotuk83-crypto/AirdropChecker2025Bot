@@ -78,7 +78,8 @@ def _find_combo_image_url(soup: BeautifulSoup, game_name: str, base_url: str) ->
         width = img.get("width")
         height = img.get("height")
         try:
-            if width and height and int(width) > 100 and int(height) > 100:
+            # Збільшуємо мінімальний розмір, щоб виключити банери/іконки
+            if width and height and int(width) > 200 and int(height) > 200:
                 is_large_enough = True
         except ValueError:
             pass
@@ -97,7 +98,13 @@ def _find_combo_image_url(soup: BeautifulSoup, game_name: str, base_url: str) ->
 # ================== ПАРСЕРИ (З ДОДАТКОВИМ АРГУМЕНТОМ) ==================
 
 # Тепер парсери приймають `prefer_text: bool`
-def parse_hamster(html: str, prefer_text: bool = False) -> str:
+def parse_hamster(html: str, prefer_text: bool = False) -> dict:
+    """
+    Парсер Hamster. Повертає словник:
+    - {'type': 'image', 'url': str}
+    - {'type': 'text', 'cards': list[str], 'morse': str | None}
+    - {'type': 'error', 'message': str}
+    """
     soup = BeautifulSoup(html, "html.parser")
     base_url = BASE_URLS["hamster"]
 
@@ -105,23 +112,51 @@ def parse_hamster(html: str, prefer_text: bool = False) -> str:
     if not prefer_text:
         image_url = _find_combo_image_url(soup, "hamster", base_url)
         if image_url:
-            return f"__IMAGE_URL__:{image_url}"
+            return {'type': 'image', 'url': image_url}
 
-    # 2. ТЕКСТОВИЙ FALLBACK
-    header = soup.find(lambda tag: tag.name in ["h1", "h2", "h3", "h4"] and "combo" in tag.get_text(strip=True).lower())
-    if not header:
-        return "⏳ <b>Комбо ще не опубліковане</b>"
+    # 2. ТЕКСТОВИЙ/МОРЗЕ FALLBACK
+    morse_code = []
     cards = []
-    # Починаємо пошук тексту одразу після заголовка
-    for tag in header.find_all_next(["p", "li", "div", "span", "strong"]):
+    
+    # Регулярний вираз для пошуку шифру Морзе (буква + пробіл + крапки/тире)
+    import re
+    morse_pattern = re.compile(r'([a-zA-Z])\s*(\s*[\.\-]+)\s*$', re.IGNORECASE)
+    
+    header_found = False
+    
+    for tag in soup.find_all(["p", "li", "div", "span", "strong", "h1", "h2", "h3", "h4"]):
         text = tag.get_text(strip=True)
-        if text.isupper() and 4 <= len(text) <= 30 and text not in cards and "combo" not in text.lower():
+        
+        # Заголовки допомагають знайти початок контенту
+        if tag.name in ["h1", "h2", "h3", "h4"] and ("combo" in text.lower() or "cipher" in text.lower()):
+            header_found = True
+            continue # Пропускаємо сам заголовок
+            
+        # Якщо заголовок знайдено або це великий пост, починаємо парсинг
+        if not header_found and tag.name not in ["h1", "h2", "h3", "h4"]:
+             # Може бути просто текст у статті без явного заголовка
+             pass 
+
+        # Парсинг ШИФРУ МОРЗЕ
+        morse_match = morse_pattern.search(text)
+        if morse_match:
+            letter = morse_match.group(1).upper()
+            code = morse_match.group(2).strip().replace(' ', '')
+            morse_code.append(f"{letter} {code}")
+            
+        # Парсинг КАРТОК (великі літери)
+        if text.isupper() and 4 <= len(text) <= 30 and text not in cards and "combo" not in text.lower() and "cipher" not in text.lower():
             cards.append(text)
-        if len(cards) >= 3:
+            
+        # Обмежуємо кількість знайдених даних
+        if len(cards) >= 3 and len(morse_code) >= 4:
             break
-    if len(cards) < 3:
-        return "⏳ <b>Комбо ще не опубліковане</b>"
-    return "\n".join(f"• <b>{c}</b>" for c in cards[:3])
+            
+    if len(cards) >= 3 or len(morse_code) > 0:
+        morse_string = "\n".join(morse_code) if morse_code else None
+        return {'type': 'text', 'cards': cards[:3], 'morse': morse_string}
+        
+    return {'type': 'error', 'message': "⏳ <b>Комбо ще не опубліковане</b>"}
 
 def parse_tapswap(html: str, prefer_text: bool = False) -> str:
     soup = BeautifulSoup(html, "html.parser")
@@ -130,7 +165,8 @@ def parse_tapswap(html: str, prefer_text: bool = False) -> str:
     if not prefer_text:
         image_url = _find_combo_image_url(soup, "tapswap", base_url)
         if image_url:
-            return f"__IMAGE_URL__:{image_url}"
+            # Для TapSwap повертаємо рядок із префіксом
+            return f"__IMAGE_URL__:{image_url}" 
         
     codes = []
     for tag in soup.find_all(["p", "div", "span", "strong"]):
@@ -237,7 +273,7 @@ def back_kb():
         [types.InlineKeyboardButton(text="<< Назад до меню", callback_data="back_to_menu")]
     ])
 
-# ================== HANDLERS (КЛЮЧОВЕ ОНОВЛЕННЯ) ==================
+# ================== HANDLERS (ОНОВЛЕНО) ==================
 
 @dp.message(CommandStart())
 async def start(m: types.Message):
@@ -269,15 +305,31 @@ async def send_combo(cb: types.CallbackQuery):
     
     try:
         html = await fetch(SOURCES[game])
+        combo_result = None
+        is_hamster = (game == "hamster")
 
-        # Спроба 1: Парсинг із зображенням
-        combo_result = parser_func(html, prefer_text=False)
-        is_image_attempt = False
+        # 1. Спроба 1: Парсинг із зображенням
+        # Для Hamster parser_func повертає словник, для інших - рядок
+        if is_hamster:
+            combo_data = parser_func(html, prefer_text=False)
+            if combo_data['type'] == 'image':
+                 combo_result = f"__IMAGE_URL__:{combo_data['url']}"
+            elif combo_data['type'] == 'text':
+                 # Зберігаємо текстові дані для фінальної обробки, якщо зображення не спрацює
+                 combo_result = combo_data
+            else:
+                 combo_result = combo_data['message'] # Повідомлення про помилку/відсутність комбо
+        else:
+            # Для інших ігор, як і раніше, повертається рядок
+            combo_result = parser_func(html, prefer_text=False)
+
+        image_url = None
         
-        if combo_result.startswith("__IMAGE_URL__:") and len(combo_result) > 14:
+        # Обробка результату для Hamster (якщо був словник) або для інших (якщо був рядок з префіксом)
+        if isinstance(combo_result, str) and combo_result.startswith("__IMAGE_URL__:") and len(combo_result) > 14:
             image_url = combo_result[14:]
-            is_image_attempt = True
-            
+
+        if image_url:
             log.info(f"Attempting to send image for {game} from URL: {image_url}")
 
             # Надіслати ЗОБРАЖЕННЯ
@@ -299,19 +351,40 @@ async def send_combo(cb: types.CallbackQuery):
                 # Обробка помилок завантаження зображень (failed to get HTTP URL content, wrong type)
                 if "failed to get HTTP URL content" in str(e) or "wrong type of the web page content" in str(e):
                     log.warning(f"Image send failed for {game} ({image_url}). Reason: {e}. Falling back to text.")
-                    # Скидаємо прапор is_image_attempt, щоб перейти до текстового парсингу
-                    is_image_attempt = False
-                    
+                    # Скидаємо image_url, щоб перейти до текстового парсингу
+                    image_url = None 
                 else:
                     # Інша невідома помилка Telegram, виводимо її користувачеві
                     raise e 
         
-        # Спроба 2: Парсинг лише тексту, якщо спроба зображення провалилася або не було знайдено зображення
-        if not is_image_attempt:
+        # 2. Спроба 2: Парсинг лише тексту (якщо спроба зображення провалилася)
+        
+        # Якщо це Hamster, і ми вже маємо текстові дані (combo_data), використовуємо їх
+        if is_hamster and isinstance(combo_result, dict) and combo_result['type'] == 'text':
+            cards_text = "\n".join(f"• <b>{c}</b>" for c in combo_result['cards'])
+            morse_text = (f"\n\n<b>Шифр Морзе:</b>\n{combo_result['morse']}" if combo_result['morse'] else "")
+            
+            text_body = f"{cards_text}{morse_text}"
+        
+        # Для інших ігор або якщо Hamster не знайшов ані зображення, ані повний текст з першої спроби, парсимо лише текст
+        elif not image_url:
             # Парсимо лише текст, ігноруючи пошук зображень
-            combo_result = parser_func(html, prefer_text=True)
-            text = f"<b>{name}</b>\nКомбо на <b>{datetime.now():%d.%m.%Y}</b>\n\n{combo_result}"
-            await cb.message.edit_text(text, reply_markup=back_kb())
+            # Для Hamster, якщо ми тут, це означає, що combo_result був помилкою або не був встановлений належним чином
+            if is_hamster:
+                combo_data = parser_func(html, prefer_text=True)
+                if combo_data['type'] == 'text':
+                    cards_text = "\n".join(f"• <b>{c}</b>" for c in combo_data['cards'])
+                    morse_text = (f"\n\n<b>Шифр Морзе:</b>\n{combo_data['morse']}" if combo_data['morse'] else "")
+                    text_body = f"{cards_text}{morse_text}"
+                else:
+                    text_body = combo_data['message']
+            else:
+                # Для інших ігор: парсинг лише тексту
+                text_body = parser_func(html, prefer_text=True)
+                
+        # Надіслати ТЕКСТ
+        text = f"<b>{name}</b>\nКомбо на <b>{datetime.now():%d.%m.%Y}</b>\n\n{text_body}"
+        await cb.message.edit_text(text, reply_markup=back_kb())
 
 
     except Exception as e:
