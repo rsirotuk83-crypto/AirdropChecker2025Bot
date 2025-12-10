@@ -20,7 +20,7 @@ if not BOT_TOKEN or not WEBHOOK_HOST:
     raise RuntimeError("BOT_TOKEN або WEBHOOK_HOST не встановлено")
 
 WEBHOOK_PATH = "/webhook"
-WEBHOOK_URL = f"{WEBHOOK_HOST}{WEBHOOK_PATH}"  # ВИПРАВЛЕНО!
+WEBHOOK_URL = f"{WEBHOOK_HOST}{WEBHOOK_PATH}"
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 log = logging.getLogger(__name__)
@@ -38,7 +38,78 @@ SOURCES = {
 }
 
 # ================== ПАРСЕРИ ==================
-# (твій останній робочий варіант парсерів — без змін)
+def parse_hamster(html: str) -> str:
+    soup = BeautifulSoup(html, "html.parser")
+    header = soup.find(lambda tag: tag.name in ["h1", "h2", "h3", "h4"] and "combo" in tag.get_text(strip=True).lower())
+    if not header:
+        return "⏳ <b>Комбо ще не опубліковане</b>"
+    cards = []
+    for tag in header.find_all_next(["p", "li", "div", "span", "strong"]):
+        text = tag.get_text(strip=True)
+        if text.isupper() and 4 <= len(text) <= 30 and text not in cards:
+            cards.append(text)
+        if len(cards) >= 3:
+            break
+    if len(cards) < 3:
+        return "⏳ <b>Комбо ще не опубліковане</b>"
+    return "\n".join(f"• <b>{c}</b>" for c in cards[:3])
+
+def parse_tapswap(html: str) -> str:
+    soup = BeautifulSoup(html, "html.parser")
+    codes = []
+    for tag in soup.find_all(["p", "div", "span", "strong"]):
+        text = tag.get_text(strip=True)
+        if "code" in text.lower() or "cipher" in text.lower():
+            parts = text.split()
+            for part in parts[::-1]:
+                if part.isalnum() and len(part) >= 4:
+                    codes.append(part.upper())
+                    break
+    codes = list(dict.fromkeys(codes))
+    return "\n".join(f"• <b>{c}</b>" for c in codes[:5]) or "⏳ <b>Комбо ще не знайдено</b>"
+
+def parse_blum(html: str) -> str:
+    soup = BeautifulSoup(html, "html.parser")
+    codes = []
+    for tag in soup.find_all(["strong", "p", "span", "div"]):
+        text = tag.get_text(strip=True)
+        if text.isupper() and 5 <= len(text) <= 20 and text not in codes:
+            codes.append(text)
+        if len(codes) >= 3:
+            break
+    return "\n".join(f"• <b>{c}</b>" for c in codes[:3]) or "⏳ <b>Комбо ще не знайдено</b>"
+
+def parse_cattea(html: str) -> str:
+    soup = BeautifulSoup(html, "html.parser")
+    if "searching" in html.lower() or "coming soon" in html.lower():
+        return "⏳ <b>Комбо ще не знайдено (searching...)</b>"
+    header = soup.find(lambda tag: tag.name in ["h2", "h3", "h4"] and "cattea" in tag.get_text(strip=True).lower())
+    if not header:
+        return "⏳ <b>Комбо ще не опубліковане</b>"
+    cards = []
+    for tag in header.find_all_next(["p", "li", "div", "strong", "span"]):
+        text = tag.get_text(strip=True)
+        if text and len(text) > 3 and text not in cards:
+            cards.append(text)
+        if len(cards) >= 4:
+            break
+    return "\n".join(f"• <b>{c}</b>" for c in cards[:4]) or "⏳ <b>Комбо ще не знайдено</b>"
+
+def parse_tonstation(html: str) -> str:
+    soup = BeautifulSoup(html, "html.parser")
+    if "searching" in html.lower():
+        return "⏳ <b>Комбо ще не знайдено (searching...)</b>"
+    header = soup.find(lambda tag: tag.name in ["h2", "h3"] and "ton station" in tag.get_text(strip=True).lower())
+    if not header:
+        return "⏳ <b>Комбо ще не опубліковане</b>"
+    cards = []
+    for tag in header.find_all_next(["p", "li", "div"]):
+        text = tag.get_text(strip=True)
+        if text and len(text) > 3 and text not in cards:
+            cards.append(text)
+        if len(cards) >= 4:
+            break
+    return "\n".join(f"• <b>{c}</b>" for c in cards[:4]) or "⏳ <b>Комбо ще не знайдено</b>"
 
 # ================== FETCH ==================
 async def fetch(url: str) -> str:
@@ -58,9 +129,7 @@ def main_kb():
             types.InlineKeyboardButton(text="🌸 Blum", callback_data="blum"),
             types.InlineKeyboardButton(text="🐱 CatTea", callback_data="cattea")
         ],
-        [
-            types.InlineKeyboardButton(text="🚉 TON Station", callback_data="tonstation")
-        ]
+        [types.InlineKeyboardButton(text="🚉 TON Station", callback_data="tonstation")]
     ])
 
 def back_kb():
