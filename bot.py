@@ -36,7 +36,7 @@ SOURCES = {
     "cattea": "https://miningcombo.com/cattea/",
 }
 
-# ================== ОНОВЛЕНІ ПАРСЕРИ (працюють 10.12.2025) ==================
+# ================== ПАРСЕРИ (оновлено для CatTea) ==================
 def parse_hamster(html: str) -> str:
     soup = BeautifulSoup(html, "html.parser")
     header = soup.find(lambda tag: tag.name in ["h1", "h2", "h3", "h4"] and "combo" in tag.get_text(strip=True).lower())
@@ -56,17 +56,15 @@ def parse_hamster(html: str) -> str:
 def parse_tapswap(html: str) -> str:
     soup = BeautifulSoup(html, "html.parser")
     codes = []
-    # Більш гнучкий пошук: будь-який блок з "code" або "cipher"
     for tag in soup.find_all(["p", "div", "span", "strong"]):
         text = tag.get_text(strip=True)
         if "code" in text.lower() or "cipher" in text.lower():
-            # Беремо останнє слово або слово після "code:"
             parts = text.split()
             for part in parts[::-1]:
                 if part.isalnum() and len(part) >= 4:
                     codes.append(part.upper())
                     break
-    codes = list(dict.fromkeys(codes))  # видаляємо дублі
+    codes = list(dict.fromkeys(codes))  # дублі
     return "\n".join(f"• <b>{c}</b>" for c in codes[:5]) or "⏳ <b>Комбо ще не знайдено</b>"
 
 def parse_blum(html: str) -> str:
@@ -82,19 +80,21 @@ def parse_blum(html: str) -> str:
 
 def parse_cattea(html: str) -> str:
     soup = BeautifulSoup(html, "html.parser")
-    if "searching" in html.lower() or "coming soon" in html.lower():
-        return "⏳ <b>Комбо ще не знайдено</b>"
+    if "searching" in html.lower() or "coming soon" in html.lower() or "we are searching" in html.lower():
+        return "⏳ <b>Комбо ще не знайдено (searching...)</b>"
     header = soup.find(lambda tag: tag.name in ["h2", "h3", "h4"] and "cattea" in tag.get_text(strip=True).lower())
     if not header:
-        return "⏳ <b>Комбо ще не знайдено</b>"
+        return "⏳ <b>Комбо ще не опубліковане</b>"
     cards = []
-    for tag in header.find_all_next(["p", "li", "div", "strong"]):
+    for tag in header.find_all_next(["p", "li", "div", "strong", "span"]):
         text = tag.get_text(strip=True)
         if text and len(text) > 3 and text not in cards:
             cards.append(text)
         if len(cards) >= 4:
             break
-    return "\n".join(f"• <b>{c}</b>" for c in cards[:4]) or "⏳ <b>Комбо ще не знайдено</b>"
+    if len(cards) < 3:
+        return "⏳ <b>Комбо ще не знайдено</b>"
+    return "\n".join(f"• <b>{c}</b>" for c in cards[:4])
 
 # ================== FETCH ==================
 async def fetch(url: str) -> str:
