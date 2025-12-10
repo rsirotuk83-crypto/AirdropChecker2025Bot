@@ -39,6 +39,7 @@ SOURCES = {
 }
 
 # Базові URL-адреси для коректного вирішення відносних шляхів зображень
+# Усі посилання на MiningCombo мають однакову базу
 BASE_URLS = {
     "hamster": "https://hamster-combo.com",
     "tapswap": "https://miningcombo.com",
@@ -57,15 +58,17 @@ def _find_combo_image_url(soup: BeautifulSoup, game_name: str, base_url: str) ->
         alt = img.get("alt", "")
         title = img.get("title", "")
 
-        # Перевірка на ключові слова у відповідних атрибутах
+        # Перевірка на ключові слова
         if any(k in src.lower() or k in alt.lower() or k in title.lower() for k in keywords):
-            # Вирішення відносного шляху, якщо необхідно
+            # Вирішення відносного шляху
             if src.startswith('http'):
                 return src
+            elif src.startswith('//'):
+                # Обробка URL без схеми (//example.com/img.png)
+                return f"https:{src}"
             elif src.startswith('/'):
-                # Додаємо базовий URL для відносних шляхів
+                # Обробка відносного шляху (/img.png)
                 return base_url.rstrip('/') + src
-            # Для інших випадків (наприклад, base64 або незрозумілих шляхів) ігноруємо
             
     return None
 
@@ -78,10 +81,9 @@ def parse_hamster(html: str) -> str:
     # 1. Спроба знайти ЗОБРАЖЕННЯ
     image_url = _find_combo_image_url(soup, "hamster", base_url)
     if image_url:
-        # Спеціальний префікс, який сигналізує обробнику send_combo, що це URL зображення
         return f"__IMAGE_URL__:{image_url}"
 
-    # 2. ТЕКСТОВИЙ FALLBACK (поточна логіка)
+    # 2. ТЕКСТОВИЙ FALLBACK
     header = soup.find(lambda tag: tag.name in ["h1", "h2", "h3", "h4"] and "combo" in tag.get_text(strip=True).lower())
     if not header:
         return "⏳ <b>Комбо ще не опубліковане</b>"
@@ -97,13 +99,17 @@ def parse_hamster(html: str) -> str:
     return "\n".join(f"• <b>{c}</b>" for c in cards[:3])
 
 def parse_tapswap(html: str) -> str:
-    # Залишаємо лише пошук тексту, оскільки TapSwap скоріш за все текстовий
     soup = BeautifulSoup(html, "html.parser")
+    # TapSwap зазвичай має текстовий код, але додамо пошук зображень як fallback
+    base_url = BASE_URLS["tapswap"]
+    image_url = _find_combo_image_url(soup, "tapswap", base_url)
+    if image_url:
+        return f"__IMAGE_URL__:{image_url}"
+        
     codes = []
     for tag in soup.find_all(["p", "div", "span", "strong"]):
         text = tag.get_text(strip=True)
         if "code" in text.lower() or "cipher" in text.lower():
-            # Оновлена логіка: шукаємо 4-10 буквено-цифрових символів як код
             parts = text.split()
             for part in parts:
                 cleaned_part = ''.join(filter(str.isalnum, part))
@@ -114,10 +120,14 @@ def parse_tapswap(html: str) -> str:
 
 def parse_blum(html: str) -> str:
     soup = BeautifulSoup(html, "html.parser")
+    base_url = BASE_URLS["blum"]
+    image_url = _find_combo_image_url(soup, "blum", base_url)
+    if image_url:
+        return f"__IMAGE_URL__:{image_url}"
+        
     codes = []
     for tag in soup.find_all(["strong", "p", "span", "div"]):
         text = tag.get_text(strip=True)
-        # Blum завжди шукає великі літери
         if text.isupper() and 5 <= len(text) <= 20 and text not in codes:
             codes.append(text)
         if len(codes) >= 3:
@@ -126,6 +136,11 @@ def parse_blum(html: str) -> str:
 
 def parse_cattea(html: str) -> str:
     soup = BeautifulSoup(html, "html.parser")
+    base_url = BASE_URLS["cattea"]
+    image_url = _find_combo_image_url(soup, "cattea", base_url)
+    if image_url:
+        return f"__IMAGE_URL__:{image_url}"
+        
     if "searching" in html.lower() or "coming soon" in html.lower():
         return "⏳ <b>Комбо ще не знайдено (searching...)</b>"
     header = soup.find(lambda tag: tag.name in ["h2", "h3", "h4"] and "cattea" in tag.get_text(strip=True).lower())
@@ -147,10 +162,9 @@ def parse_tonstation(html: str) -> str:
     # 1. Спроба знайти ЗОБРАЖЕННЯ
     image_url = _find_combo_image_url(soup, "ton station", base_url)
     if image_url:
-        # Спеціальний префікс, який сигналізує обробнику send_combo, що це URL зображення
         return f"__IMAGE_URL__:{image_url}"
 
-    # 2. ТЕКСТОВИЙ FALLBACK (поточна логіка)
+    # 2. ТЕКСТОВИЙ FALLBACK
     if "searching" in html.lower():
         return "⏳ <b>Комбо ще не знайдено (searching...)</b>"
     header = soup.find(lambda tag: tag.name in ["h2", "h3"] and "ton station" in tag.get_text(strip=True).lower())
@@ -228,6 +242,8 @@ async def send_combo(cb: types.CallbackQuery):
         if combo_result.startswith("__IMAGE_URL__:") and len(combo_result) > 14:
             image_url = combo_result[14:]
             
+            log.info(f"Sending image for {game} from URL: {image_url}") # Логування URL для діагностики
+
             # Надіслати ЗОБРАЖЕННЯ
             caption = f"<b>{name}</b>\nКомбо на <b>{datetime.now():%d.%m.%Y}</b>\n\n✅ <b>Комбо знайдено як зображення.</b>"
             await bot.send_photo(
@@ -237,8 +253,11 @@ async def send_combo(cb: types.CallbackQuery):
                 reply_markup=back_kb(),
                 parse_mode=ParseMode.HTML
             )
-            # Видалити старе повідомлення з кнопками, щоб уникнути дублювання
-            await cb.message.delete()
+            # Видалити повідомлення "Отримую дані..."
+            try:
+                await cb.message.delete()
+            except Exception as e:
+                log.warning(f"Could not delete old message after sending photo: {e}")
         else:
             # Надіслати ТЕКСТ (стандартна логіка)
             text = f"<b>{name}</b>\nКомбо на <b>{datetime.now():%d.%m.%Y}</b>\n\n{combo_result}"
@@ -255,7 +274,21 @@ async def send_combo(cb: types.CallbackQuery):
 @dp.callback_query(F.data == "back_to_menu")
 async def back_to_menu_handler(cb: types.CallbackQuery):
     await cb.answer()
-    await cb.message.edit_text("<b>🎮 Щоденні комбо ігор</b>\n\nОбери гру:", reply_markup=main_kb())
+    menu_text = "<b>🎮 Щоденні комбо ігор</b>\n\nОбери гру:"
+    try:
+        # Спроба відредагувати повідомлення (працює для текстових повідомлень)
+        await cb.message.edit_text(menu_text, reply_markup=main_kb())
+    except Exception as e:
+        log.warning(f"Failed to edit message back to menu: {e}. Sending new message instead.")
+        # Якщо не вдалося відредагувати (наприклад, це було фото), надсилаємо нове повідомлення
+        new_message = await cb.message.answer(menu_text, reply_markup=main_kb())
+        # Якщо ми надіслали нове повідомлення, ми можемо видалити старе фото, щоб очистити чат.
+        try:
+             # Видаляємо повідомлення, до якого була прикріплена кнопка "Назад" (тобто фото)
+             await cb.message.delete()
+        except Exception as e:
+             log.warning(f"Failed to delete old photo message: {e}")
+
 
 # ================== WEBHOOK ==================
 async def on_startup(app: web.Application):
