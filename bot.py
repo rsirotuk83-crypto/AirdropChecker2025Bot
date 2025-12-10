@@ -11,7 +11,6 @@ from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
 from aiogram.webhook.aiohttp_server import SimpleRequestHandler
 
-# ================== CONFIG & LOGGING ==================
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 WEBHOOK_HOST = os.getenv("WEBHOOK_HOST")
 PORT = int(os.getenv("PORT", 8080))
@@ -28,15 +27,16 @@ log = logging.getLogger(__name__)
 bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
 dp = Dispatcher()
 
-# ================== SOURCES ==================
+# ================== SOURCES (ДОДАНО TON Station) ==================
 SOURCES = {
     "hamster": "https://hamster-combo.com",
     "tapswap": "https://miningcombo.com/tapswap-2/",
     "blum": "https://miningcombo.com/blum-2/",
     "cattea": "https://miningcombo.com/cattea/",
+    "tonstation": "https://miningcombo.com/ton-station/",  # НОВА ГРА!
 }
 
-# ================== ПАРСЕРИ (оновлено для CatTea) ==================
+# ================== ПАРСЕРИ (оновлено для TON Station) ==================
 def parse_hamster(html: str) -> str:
     soup = BeautifulSoup(html, "html.parser")
     header = soup.find(lambda tag: tag.name in ["h1", "h2", "h3", "h4"] and "combo" in tag.get_text(strip=True).lower())
@@ -64,7 +64,7 @@ def parse_tapswap(html: str) -> str:
                 if part.isalnum() and len(part) >= 4:
                     codes.append(part.upper())
                     break
-    codes = list(dict.fromkeys(codes))  # дублі
+    codes = list(dict.fromkeys(codes))
     return "\n".join(f"• <b>{c}</b>" for c in codes[:5]) or "⏳ <b>Комбо ще не знайдено</b>"
 
 def parse_blum(html: str) -> str:
@@ -80,7 +80,7 @@ def parse_blum(html: str) -> str:
 
 def parse_cattea(html: str) -> str:
     soup = BeautifulSoup(html, "html.parser")
-    if "searching" in html.lower() or "coming soon" in html.lower() or "we are searching" in html.lower():
+    if "searching" in html.lower() or "coming soon" in html.lower():
         return "⏳ <b>Комбо ще не знайдено (searching...)</b>"
     header = soup.find(lambda tag: tag.name in ["h2", "h3", "h4"] and "cattea" in tag.get_text(strip=True).lower())
     if not header:
@@ -92,8 +92,19 @@ def parse_cattea(html: str) -> str:
             cards.append(text)
         if len(cards) >= 4:
             break
-    if len(cards) < 3:
-        return "⏳ <b>Комбо ще не знайдено</b>"
+    return "\n".join(f"• <b>{c}</b>" for c in cards[:4]) or "⏳ <b>Комбо ще не знайдено</b>"
+
+def parse_tonstation(html: str) -> str:
+    soup = BeautifulSoup(html, "html.parser")
+    # TON Station показує комбо як зображення або текст після заголовка
+    cards = []
+    for img in soup.find_all("img"):
+        alt = img.get("alt", "")
+        src = img.get("src", "")
+        if "combo" in alt.lower() or "card" in alt.lower() or "combo" in src:
+            cards.append(alt or src.split("/")[-1])
+    if len(cards) < 4:
+        return "⏳ <b>Комбо ще не опубліковане</b>"
     return "\n".join(f"• <b>{c}</b>" for c in cards[:4])
 
 # ================== FETCH ==================
@@ -113,6 +124,9 @@ def main_kb():
         [
             types.InlineKeyboardButton(text="🌸 Blum", callback_data="blum"),
             types.InlineKeyboardButton(text="🐱 CatTea", callback_data="cattea")
+        ],
+        [
+            types.InlineKeyboardButton(text="🚉 TON Station", callback_data="tonstation")  # НОВА КНОПКА!
         ]
     ])
 
@@ -134,7 +148,8 @@ async def send_combo(cb: types.CallbackQuery):
         "hamster": "🐹 Hamster Kombat",
         "tapswap": "⚡ TapSwap",
         "blum": "🌸 Blum",
-        "cattea": "🐱 CatTea"
+        "cattea": "🐱 CatTea",
+        "tonstation": "🚉 TON Station"  # НОВА!
     }[game]
     try:
         html = await fetch(SOURCES[game])
@@ -144,8 +159,10 @@ async def send_combo(cb: types.CallbackQuery):
             combo = parse_tapswap(html)
         elif game == "blum":
             combo = parse_blum(html)
-        else:
+        elif game == "cattea":
             combo = parse_cattea(html)
+        else:  # tonstation
+            combo = parse_tonstation(html)
         text = f"<b>{name}</b>\nКомбо на <b>{datetime.now():%d.%m.%Y}</b>\n\n{combo}"
     except Exception as e:
         log.error(f"Error for {game}: {e}")
