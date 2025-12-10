@@ -25,7 +25,6 @@ WEBHOOK_URL = f"{WEBHOOK_HOST}{WEBHOOK_PATH}"
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 log = logging.getLogger(__name__)
 
-# Використовуємо parse_mode=ParseMode.HTML для коректного відображення жирного шрифту
 bot = Bot(token=BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
 dp = Dispatcher()
 
@@ -38,8 +37,6 @@ SOURCES = {
     "tonstation": "https://miningcombo.com/ton-station/",
 }
 
-# Базові URL-адреси для коректного вирішення відносних шляхів зображень
-# Усі посилання на MiningCombo мають однакову базу
 BASE_URLS = {
     "hamster": "https://hamster-combo.com",
     "tapswap": "https://miningcombo.com",
@@ -48,31 +45,56 @@ BASE_URLS = {
     "tonstation": "https://miningcombo.com",
 }
 
-# ================== ДОПОМІЖНА ФУНКЦІЯ ДЛЯ ЗОБРАЖЕНЬ ==================
+# ================== ДОПОМІЖНА ФУНКЦІЯ ДЛЯ ЗОБРАЖЕНЬ (ОНОВЛЕНО) ==================
 def _find_combo_image_url(soup: BeautifulSoup, game_name: str, base_url: str) -> str | None:
-    """Шукає тег <img> з ключовими словами та повертає абсолютний URL."""
-    keywords = ["combo", "cipher", "комбо", game_name.lower()]
+    """Шукає тег <img> з ключовими словами УСЕРЕДИНІ КОНТЕНТУ та повертає абсолютний URL."""
     
-    for img in soup.find_all("img"):
+    # Ключові слова, які вказують на комбо
+    keywords = ["combo", "cipher", "комбо", "daily", "щоденне", game_name.lower().replace(" ", "-")]
+    # Слова, які вказують на логотип чи іконку, і мають бути виключені
+    EXCLUDED_KEYWORDS = ["logo", "icon", "favicon", "cropped", "74x95"] 
+    
+    # Спробуємо знайти зображення всередині основного контенту статті (типово для WordPress)
+    content_area = soup.find(["article", "div"], class_=lambda x: x and ('entry-content' in x or 'main-content' in x or 'post-content' in x))
+    if not content_area:
+        content_area = soup # Fallback to searching the whole page
+
+    for img in content_area.find_all("img"):
         src = img.get("src", "")
         alt = img.get("alt", "")
         title = img.get("title", "")
+        
+        # 1. Виключаємо зображення, які є логотипами або іконками
+        img_check_string = src.lower() + alt.lower() + title.lower()
+        if any(exc in img_check_string for exc in EXCLUDED_KEYWORDS):
+            continue
 
-        # Перевірка на ключові слова
-        if any(k in src.lower() or k in alt.lower() or k in title.lower() for k in keywords):
+        # 2. Зображення має бути релевантним АБО достатньо великим
+        is_relevant = any(k in img_check_string for k in keywords)
+        
+        # Перевірка розміру: ігноруємо, якщо обидва розміри менше 100px (типова ознака логотипу)
+        is_large_enough = False
+        width = img.get("width")
+        height = img.get("height")
+        try:
+            if width and height and int(width) > 100 and int(height) > 100:
+                is_large_enough = True
+        except ValueError:
+            pass # Ігноруємо, якщо розміри не числові
+
+        # Приймаємо, якщо воно релевантне АБО достатньо велике
+        if is_relevant or is_large_enough:
             # Вирішення відносного шляху
             if src.startswith('http'):
                 return src
             elif src.startswith('//'):
-                # Обробка URL без схеми (//example.com/img.png)
                 return f"https:{src}"
             elif src.startswith('/'):
-                # Обробка відносного шляху (/img.png)
                 return base_url.rstrip('/') + src
             
     return None
 
-# ================== ПАРСЕРИ (ОНОВЛЕНО) ==================
+# ================== ПАРСЕРИ ==================
 
 def parse_hamster(html: str) -> str:
     soup = BeautifulSoup(html, "html.parser")
@@ -83,7 +105,7 @@ def parse_hamster(html: str) -> str:
     if image_url:
         return f"__IMAGE_URL__:{image_url}"
 
-    # 2. ТЕКСТОВИЙ FALLBACK
+    # 2. ТЕКСТОВИЙ FALLBACK (поточна логіка)
     header = soup.find(lambda tag: tag.name in ["h1", "h2", "h3", "h4"] and "combo" in tag.get_text(strip=True).lower())
     if not header:
         return "⏳ <b>Комбо ще не опубліковане</b>"
@@ -100,7 +122,6 @@ def parse_hamster(html: str) -> str:
 
 def parse_tapswap(html: str) -> str:
     soup = BeautifulSoup(html, "html.parser")
-    # TapSwap зазвичай має текстовий код, але додамо пошук зображень як fallback
     base_url = BASE_URLS["tapswap"]
     image_url = _find_combo_image_url(soup, "tapswap", base_url)
     if image_url:
@@ -214,7 +235,9 @@ async def start(m: types.Message):
 
 @dp.callback_query(F.data.in_(SOURCES.keys()))
 async def send_combo(cb: types.CallbackQuery):
-    await cb.answer("Отримую дані...", cache_time=5)
+    # Використовуємо cb.message.edit_text для індикації завантаження
+    await cb.message.edit_text("⏳ Отримую дані...", reply_markup=main_kb()) 
+    
     game = cb.data
     name = {
         "hamster": "🐹 Hamster Kombat",
@@ -225,10 +248,8 @@ async def send_combo(cb: types.CallbackQuery):
     }[game]
 
     try:
-        # 1. Отримати HTML
         html = await fetch(SOURCES[game])
 
-        # 2. Викликати відповідний парсер
         parser_map = {
             "hamster": parse_hamster,
             "tapswap": parse_tapswap,
@@ -246,6 +267,8 @@ async def send_combo(cb: types.CallbackQuery):
 
             # Надіслати ЗОБРАЖЕННЯ
             caption = f"<b>{name}</b>\nКомбо на <b>{datetime.now():%d.%m.%Y}</b>\n\n✅ <b>Комбо знайдено як зображення.</b>"
+            
+            # bot.send_photo автоматично видалить попередній індикатор
             await bot.send_photo(
                 chat_id=cb.message.chat.id,
                 photo=image_url,
@@ -253,11 +276,14 @@ async def send_combo(cb: types.CallbackQuery):
                 reply_markup=back_kb(),
                 parse_mode=ParseMode.HTML
             )
-            # Видалити повідомлення "Отримую дані..."
+            
+            # Видалити старе текстове повідомлення-індикатор (якщо bot.send_photo його не видалив)
             try:
+                # В ідеалі ми хочемо видалити лише те повідомлення, яке було "⏳ Отримую дані..."
                 await cb.message.delete()
             except Exception as e:
                 log.warning(f"Could not delete old message after sending photo: {e}")
+                
         else:
             # Надіслати ТЕКСТ (стандартна логіка)
             text = f"<b>{name}</b>\nКомбо на <b>{datetime.now():%d.%m.%Y}</b>\n\n{combo_result}"
@@ -276,15 +302,14 @@ async def back_to_menu_handler(cb: types.CallbackQuery):
     await cb.answer()
     menu_text = "<b>🎮 Щоденні комбо ігор</b>\n\nОбери гру:"
     try:
-        # Спроба відредагувати повідомлення (працює для текстових повідомлень)
+        # 1. Спроба відредагувати повідомлення (працює для текстових повідомлень)
         await cb.message.edit_text(menu_text, reply_markup=main_kb())
     except Exception as e:
         log.warning(f"Failed to edit message back to menu: {e}. Sending new message instead.")
-        # Якщо не вдалося відредагувати (наприклад, це було фото), надсилаємо нове повідомлення
-        new_message = await cb.message.answer(menu_text, reply_markup=main_kb())
-        # Якщо ми надіслали нове повідомлення, ми можемо видалити старе фото, щоб очистити чат.
+        # 2. Якщо не вдалося відредагувати (наприклад, це було фото), надсилаємо нове повідомлення
+        await cb.message.answer(menu_text, reply_markup=main_kb())
         try:
-             # Видаляємо повідомлення, до якого була прикріплена кнопка "Назад" (тобто фото)
+             # 3. Видаляємо повідомлення, до якого була прикріплена кнопка "Назад" (тобто фото)
              await cb.message.delete()
         except Exception as e:
              log.warning(f"Failed to delete old photo message: {e}")
